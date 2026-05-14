@@ -122,6 +122,16 @@ func TestRedisCache(t *testing.T) {
 		require.NotEqual(t, cache.entryTerm(parent), entry.term)
 	})
 
+	t.Run("entry term expires after idle", func(t *testing.T) {
+		cache := newRedisCache("jfs", 1000, 50*time.Millisecond, 0)
+		parent := Ino(106)
+
+		require.Equal(t, uint64(1), cache.bumpEntryTerm(parent))
+		time.Sleep(3 * cache.expiry)
+		require.Equal(t, uint64(0), cache.entryTerm(parent))
+		require.Empty(t, cache.entryTerms)
+	})
+
 	t.Run("entry mark refill requires current generation", func(t *testing.T) {
 		cache := m.cache
 		parent := Ino(107)

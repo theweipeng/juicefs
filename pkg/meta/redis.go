@@ -971,9 +971,7 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 		cacheKey = m.cache.entryName(parent, name)
 		entryTerm = m.cache.entryTerm(parent)
 		if entry, ok := m.cache.entryCache.Get(cacheKey); ok {
-			if entry.term != entryTerm {
-				m.cache.entryCache.Remove(cacheKey)
-			} else if !entry.isMark() {
+			if entry.term >= entryTerm && !entry.isMark() {
 				*inode = entry.ino
 				if attr != nil {
 					*attr = entry.Attr
@@ -982,7 +980,7 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 			}
 		}
 		m.cache.entryCache.AddIf(cacheKey, &cachedEntry{term: entryTerm}, func(oldEntry *cachedEntry, exists bool) bool {
-			return !exists || oldEntry.term != entryTerm
+			return !exists || oldEntry.term < entryTerm
 		})
 	}
 	if len(m.shaLookup) > 0 && attr != nil && !m.conf.CaseInsensi && m.prefix == "" {
@@ -1016,7 +1014,7 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 			ce := &cachedEntry{ino: foundIno, term: entryTerm}
 			m.parseAttr(encodedAttr, &ce.Attr)
 			_, _ = m.cache.entryCache.AddIf(cacheKey, ce, func(oldEntry *cachedEntry, exists bool) bool {
-				return exists && oldEntry.isMark() && oldEntry.term == entryTerm && m.cache.entryTerm(parent) == entryTerm
+				return exists && oldEntry.isMark() && oldEntry.term == entryTerm && m.cache.entryTerm(parent) <= entryTerm
 			})
 		}
 	} else if err == redis.Nil { // corrupt entry

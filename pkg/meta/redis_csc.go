@@ -40,6 +40,11 @@ type cachedEntry struct {
 	Attr
 }
 
+type entryTerm struct {
+	term     uint64
+	lastBump time.Time
+}
+
 func (e *cachedEntry) isMark() bool {
 	return e.ino == 0
 }
@@ -58,7 +63,7 @@ type redisCache struct {
 	entryCache *expirable.LRU[string, *cachedEntry]
 
 	entryTermMu sync.RWMutex
-	entryTerms  map[Ino]uint64
+	entryTerms  map[Ino]entryTerm
 }
 
 func newRedisCache(prefix string, cap int, expiry time.Duration, preload int) *redisCache {
@@ -70,7 +75,7 @@ func newRedisCache(prefix string, cap int, expiry time.Duration, preload int) *r
 		preload:    preload,
 		inodeCache: expirable.NewLRU[Ino, []byte](cap, nil, expiry),
 		entryCache: expirable.NewLRU[string, *cachedEntry](cap, nil, expiry),
-		entryTerms: make(map[Ino]uint64),
+		entryTerms: make(map[Ino]entryTerm),
 	}
 }
 
@@ -120,23 +125,38 @@ func (c *redisCache) entryName(parent Ino, name string) string {
 	return fmt.Sprintf("%d%d%s", parent, os.PathSeparator, name)
 }
 
+// entryTerm returns the current term for the parent inode; if the term is expired, it will be removed and 0 will be returned.
 func (c *redisCache) entryTerm(parent Ino) uint64 {
-	c.entryTermMu.RLock()
-	defer c.entryTermMu.RUnlock()
-	return c.entryTerms[parent]
+	c.entryTermMu.Lock()
+	defer c.entryTermMu.Unlock()
+
+	entryTerm, ok := c.entryTerms[parent]
+	if !ok {
+		return 0
+	}
+	// stale entry cache should already expired
+	if time.Since(entryTerm.lastBump) >= 2*c.expiry {
+		delete(c.entryTerms, parent)
+		return 0
+	}
+	return entryTerm.term
 }
 
 func (c *redisCache) bumpEntryTerm(parent Ino) uint64 {
 	c.entryTermMu.Lock()
 	defer c.entryTermMu.Unlock()
-	c.entryTerms[parent]++
-	return c.entryTerms[parent]
+
+	entryTerm := c.entryTerms[parent]
+	entryTerm.term++
+	entryTerm.lastBump = time.Now()
+	c.entryTerms[parent] = entryTerm
+	return entryTerm.term
 }
 
 func (c *redisCache) resetEntryTerms() {
 	c.entryTermMu.Lock()
 	defer c.entryTermMu.Unlock()
-	c.entryTerms = make(map[Ino]uint64)
+	c.entryTerms = make(map[Ino]entryTerm)
 }
 
 func (c *redisCache) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
