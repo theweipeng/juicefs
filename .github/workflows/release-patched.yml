@@ -1,6 +1,6 @@
 name: release-patched
 
-# 推 v 开头的 tag (例如 v1.3.1-patched) 时触发, 编 Linux 二进制并发布到 Releases.
+# 推 v 开头的 tag (例如 v1.3.1-patched) 时触发, 编 Linux amd64 二进制并发布到 Releases.
 # 不依赖官方 release.yml 的 goreleaser / Maven / GPG secrets, 只用 GITHUB_TOKEN.
 
 on:
@@ -15,10 +15,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,26 +28,21 @@ jobs:
       - name: Build
         env:
           GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          GOARCH: amd64
+          CGO_ENABLED: 1     # zstd / gspt / go-lz4 必须 CGO
         run: |
           REV=$(git rev-parse --short HEAD)
-          TAG=${GITHUB_REF_NAME}
-          # nosqlite: 关 SQLite 后端避免 CGO 依赖 (我们用 MySQL/OB)
-          # FUSE 用 hanwen/go-fuse 纯 Go 实现, mount 不需要 libfuse
+          TAG=${GITHUB_REF_NAME:-manual}
           go build \
-              -tags "nosqlite" \
               -ldflags="-s -w -X github.com/juicedata/juicefs/pkg/version.revision=${REV}-${TAG}" \
-              -o juicefs-linux-${{ matrix.goarch }} \
+              -o juicefs-linux-amd64 \
               .
-          ls -lh juicefs-linux-${{ matrix.goarch }}
+          ls -lh juicefs-linux-amd64
 
-      - name: Smoke test (amd64 only)
-        if: matrix.goarch == 'amd64'
+      - name: Smoke test
         run: |
           file juicefs-linux-amd64
           ./juicefs-linux-amd64 version
-          # 验证 patch 真的编进去了 (如果你的 patch marker 不同, 改这里的 grep)
           if strings juicefs-linux-amd64 | grep -q "ignoring DDL permission"; then
               echo "✓ PATCH MARKER FOUND in binary"
           else
@@ -61,8 +52,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: juicefs-linux-${{ matrix.goarch }}
-          path: juicefs-linux-${{ matrix.goarch }}
+          name: juicefs-linux-amd64
+          path: juicefs-linux-amd64
           retention-days: 30
 
   release:
@@ -73,8 +64,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: juicefs-linux-amd64
           path: dist
-          merge-multiple: true
 
       - name: List artifacts
         run: ls -lh dist/
@@ -82,7 +73,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/juicefs-linux-*
+          files: dist/juicefs-linux-amd64
           generate_release_notes: true
           body: |
             Patched build of JuiceFS for OceanBase / restricted-permission deployments.
