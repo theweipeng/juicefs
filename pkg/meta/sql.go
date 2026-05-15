@@ -561,6 +561,17 @@ func (m *dbMeta) syncTable(beans ...interface{}) error {
 	if err != nil && strings.Contains(err.Error(), "Duplicate key") {
 		err = nil
 	}
+	// OB / 受限权限兼容: 表已由 DBA 手动建好, 忽略 DDL 权限错误
+	// 1142 = CREATE/ALTER/DROP command denied
+	// 1044 = Access denied for user to database
+	// 1227 = Access denied; need privilege for operation
+	if err != nil && (strings.Contains(err.Error(), "command denied") ||
+		strings.Contains(err.Error(), "Error 1142") ||
+		strings.Contains(err.Error(), "Error 1044") ||
+		strings.Contains(err.Error(), "Error 1227")) {
+		logger.Warnf("[PATCH] syncTable: ignoring DDL permission error: %v", err)
+		err = nil
+	}
 	return err
 }
 
