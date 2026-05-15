@@ -43,7 +43,7 @@ jobs:
               -tags "nosqlite" \
               -ldflags="-s -w -X github.com/juicedata/juicefs/pkg/version.revision=${REV}-${TAG}" \
               -o juicefs-linux-${{ matrix.goarch }} \
-              ./cmd/juicefs
+              .
           ls -lh juicefs-linux-${{ matrix.goarch }}
 
       - name: Smoke test (amd64 only)
