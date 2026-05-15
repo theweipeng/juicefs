@@ -1,0 +1,100 @@
+name: release-patched
+
+# 推 v 开头的 tag (例如 v1.3.1-patched) 时触发, 编 Linux 二进制并发布到 Releases.
+# 不依赖官方 release.yml 的 goreleaser / Maven / GPG secrets, 只用 GITHUB_TOKEN.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:        # 也允许在 Actions UI 手动触发(不发 release, 只产 artifact)
+
+permissions:
+  contents: write           # 创建 release / 上传二进制需要
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          REV=$(git rev-parse --short HEAD)
+          TAG=${GITHUB_REF_NAME}
+          # nosqlite: 关 SQLite 后端避免 CGO 依赖 (我们用 MySQL/OB)
+          # FUSE 用 hanwen/go-fuse 纯 Go 实现, mount 不需要 libfuse
+          go build \
+              -tags "nosqlite" \
+              -ldflags="-s -w -X github.com/juicedata/juicefs/pkg/version.revision=${REV}-${TAG}" \
+              -o juicefs-linux-${{ matrix.goarch }} \
+              ./cmd/juicefs
+          ls -lh juicefs-linux-${{ matrix.goarch }}
+
+      - name: Smoke test (amd64 only)
+        if: matrix.goarch == 'amd64'
+        run: |
+          file juicefs-linux-amd64
+          ./juicefs-linux-amd64 version
+          # 验证 patch 真的编进去了 (如果你的 patch marker 不同, 改这里的 grep)
+          if strings juicefs-linux-amd64 | grep -q "ignoring DDL permission"; then
+              echo "✓ PATCH MARKER FOUND in binary"
+          else
+              echo "✗ WARNING: patch marker not found, binary may not be patched"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: juicefs-linux-${{ matrix.goarch }}
+          path: juicefs-linux-${{ matrix.goarch }}
+          retention-days: 30
+
+  release:
+    needs: build
+    # 只有 tag 推送才发 release; workflow_dispatch 手动触发只产 artifact
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/juicefs-linux-*
+          generate_release_notes: true
+          body: |
+            Patched build of JuiceFS for OceanBase / restricted-permission deployments.
+
+            **Patch**: `pkg/meta/sql.go` — `syncTable` 忽略 DDL 权限错误 (Error 1142/1044/1227),
+            适用于表已由 DBA 手动建好、用户只有 DML 权限的场景。
+
+            ## Install
+
+            ```bash
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/juicefs-linux-amd64 \
+                -o /tmp/juicefs && chmod +x /tmp/juicefs
+            sudo mv /tmp/juicefs /usr/local/bin/juicefs
+            juicefs version
+            ```
