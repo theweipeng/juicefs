@@ -25,11 +25,26 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Build
+      # zig cc 作为 CGO 的 cross-compiler, 显式 target glibc 2.17 (CentOS 7 / RHEL 7).
+      # 默认 ubuntu-22.04 的 gcc 链 glibc 2.35, 老 base image (glibc < 2.25) 上跑会缺符号.
+      - name: Install zig
+        run: |
+          ZIG_VERSION=0.13.0
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+              -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          rm /tmp/zig.tar.xz
+          echo "$HOME/.zig" >> $GITHUB_PATH
+          "$HOME/.zig/zig" version
+
+      - name: Build (CGO + glibc 2.17 target)
         env:
           GOOS: linux
           GOARCH: amd64
-          CGO_ENABLED: 1     # zstd / gspt / go-lz4 必须 CGO
+          CGO_ENABLED: 1
+          CC: zig cc -target x86_64-linux-gnu.2.17
+          CXX: zig c++ -target x86_64-linux-gnu.2.17
         run: |
           REV=$(git rev-parse --short HEAD)
           TAG=${GITHUB_REF_NAME:-manual}
@@ -38,6 +53,21 @@ jobs:
               -o juicefs-linux-amd64 \
               .
           ls -lh juicefs-linux-amd64
+
+      - name: Verify glibc requirement
+        run: |
+          echo "=== Required GLIBC symbol versions ==="
+          objdump -T juicefs-linux-amd64 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV || \
+              strings juicefs-linux-amd64 | grep -oE 'GLIBC_[0-9.]+' | sort -uV
+          echo "=== Highest required GLIBC ==="
+          MAX_GLIBC=$(strings juicefs-linux-amd64 | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
+          echo "$MAX_GLIBC"
+          # 期望: 不应该超过 GLIBC_2.17
+          if [[ "$MAX_GLIBC" > "GLIBC_2.18" ]]; then
+              echo "✗ WARNING: binary requires glibc newer than 2.17, may not work on old systems"
+              exit 1
+          fi
+          echo "✓ binary compatible with glibc 2.17+"
 
       - name: Smoke test
         run: |
