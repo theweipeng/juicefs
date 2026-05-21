@@ -397,6 +397,11 @@ func newOSS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error)
 	config := oss.LoadDefaultConfig()
 	config.Endpoint = oss.Ptr(domain)
 	config.Region = oss.Ptr(regionID)
+	// SDK 默认 V4 签名;蚂蚁内网 oss-alipay 等非标准 endpoint 只认 V1(与 python oss2 一致),
+	// 这类 endpoint 设 OSS_SIGNATURE_VERSION=v1 切回 V1
+	if strings.EqualFold(os.Getenv("OSS_SIGNATURE_VERSION"), "v1") {
+		config.WithSignatureVersion(oss.SignatureVersionV1)
+	}
 	config.RetryMaxAttempts = oss.Ptr(1)
 	config.ConnectTimeout = oss.Ptr(time.Second * 2)
 	config.ReadWriteTimeout = oss.Ptr(time.Second * 5)
