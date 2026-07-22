@@ -719,17 +719,53 @@ func (m *dbMeta) Reset() error {
 
 func (m *dbMeta) doLoad() (data []byte, err error) {
 	err = m.simpleTxn(Background(), func(ses *xorm.Session) error {
-		if ok, err := ses.IsTableExist(&setting{}); err != nil {
-			return err
-		} else if !ok {
-			return nil
+		tableName := m.tablePrefix + "setting"
+		if m.Name() == "mysql" {
+			rows, diagErr := ses.QueryString("SELECT VERSION() AS version, DATABASE() AS database_name, USER() AS session_user, CURRENT_USER() AS current_user")
+			if diagErr != nil {
+				logger.Warnf("[doLoad] query database identity failed: %s", diagErr)
+			} else if len(rows) == 0 {
+				logger.Warnf("[doLoad] query database identity returned no rows")
+			} else {
+				logger.Debugf("[doLoad] database identity: version=%q database=%q session_user=%q current_user=%q table=%q",
+					rows[0]["version"], rows[0]["database_name"], rows[0]["session_user"], rows[0]["current_user"], tableName)
+			}
 		}
+
+		tableExists, checkErr := ses.IsTableExist(&setting{})
+		if checkErr != nil {
+			logger.Warnf("[doLoad] IsTableExist(%q) failed: %s; trying direct read", tableName, checkErr)
+		} else if !tableExists {
+			logger.Warnf("[doLoad] IsTableExist(%q) returned false; trying direct read", tableName)
+		} else {
+			logger.Debugf("[doLoad] IsTableExist(%q) returned true", tableName)
+		}
+
 		s := setting{Name: "format"}
-		ok, err := ses.Get(&s)
-		if err == nil && ok {
-			data = []byte(s.Value)
+		ok, readErr := ses.Get(&s)
+		if readErr != nil {
+			logger.Warnf("[doLoad] direct read %q where name='format' failed: %s", tableName, readErr)
+			if checkErr != nil {
+				return fmt.Errorf("check table %q: %v; direct read: %w", tableName, checkErr, readErr)
+			}
+			if !tableExists {
+				// Preserve the original behavior for a database that has not been formatted yet.
+				return nil
+			}
+			return readErr
 		}
-		return err
+		if ok {
+			data = []byte(s.Value)
+			if checkErr != nil || !tableExists {
+				logger.Warnf("[doLoad] direct read %q where name='format' succeeded (value length=%d), but IsTableExist did not succeed",
+					tableName, len(s.Value))
+			} else {
+				logger.Debugf("[doLoad] direct read %q where name='format' succeeded (value length=%d)", tableName, len(s.Value))
+			}
+		} else {
+			logger.Warnf("[doLoad] direct read %q succeeded, but name='format' was not found", tableName)
+		}
+		return nil
 	})
 	return
 }
