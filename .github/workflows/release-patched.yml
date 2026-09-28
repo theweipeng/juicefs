@@ -38,6 +38,9 @@ jobs:
           echo "$HOME/.zig" >> $GITHUB_PATH
           "$HOME/.zig/zig" version
 
+      - name: File notification regression
+        run: go test -race ./pkg/vfs ./pkg/meta ./cmd -run 'TestChange|TestCommitted|TestInvalidation' -count=1
+
       - name: Build (CGO + glibc 2.17 target)
         env:
           GOOS: linux
@@ -63,7 +66,7 @@ jobs:
           MAX_GLIBC=$(strings juicefs-linux-amd64 | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
           echo "$MAX_GLIBC"
           # 期望: 不应该超过 GLIBC_2.17
-          if [[ "$MAX_GLIBC" > "GLIBC_2.18" ]]; then
+          if [ "$(printf '%s\n' GLIBC_2.17 "$MAX_GLIBC" | sort -V | tail -1)" != "GLIBC_2.17" ]; then
               echo "✗ WARNING: binary requires glibc newer than 2.17, may not work on old systems"
               exit 1
           fi
@@ -79,11 +82,20 @@ jobs:
               echo "✗ WARNING: patch marker not found, binary may not be patched"
           fi
 
+      - name: Linux multi-mount cache test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fuse3
+          sudo python3 tests/file_change_notifications.py ./juicefs-linux-amd64
+          sha256sum juicefs-linux-amd64 > juicefs.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: juicefs-linux-amd64
-          path: juicefs-linux-amd64
+          path: |
+            juicefs-linux-amd64
+            juicefs.sha256
           retention-days: 30
 
   release:

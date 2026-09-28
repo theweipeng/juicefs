@@ -22,6 +22,7 @@ import (
 	"path"
 	"runtime"
 
+	"github.com/juicedata/juicefs/pkg/vfs"
 	"github.com/urfave/cli/v2"
 )
 
@@ -80,6 +81,8 @@ func addCategory(f cli.Flag, cat string) {
 	case *cli.Float64Flag:
 		ff.Category = cat
 	case *cli.StringSliceFlag:
+		ff.Category = cat
+	case *cli.GenericFlag:
 		ff.Category = cat
 	default:
 		panic(f)
@@ -349,6 +352,15 @@ func shareInfoFlags() []cli.Flag {
 
 func metaCacheFlags(defaultEntryCache float64) []cli.Flag {
 	return addCategories("META CACHE", []cli.Flag{
+		&cli.StringFlag{Name: "change-socket", Usage: "local change notification and cache control Unix socket"},
+		&cli.StringFlag{Name: "change-volume", Usage: "shared change notification volume identifier"},
+		&cli.IntFlag{Name: "change-index-limit", Value: vfs.DefaultChangeIndexLimit, Usage: "maximum change-notification path relations", Action: func(_ *cli.Context, value int) error {
+			if value <= 0 {
+				return fmt.Errorf("change-index-limit must be positive")
+			}
+			return nil
+		}},
+		&cli.GenericFlag{Name: "change-glob", Value: new(changeGlobs), Usage: "watched volume-relative glob (repeatable; commas are literal)"},
 		&cli.StringFlag{
 			Name:  "attr-cache",
 			Value: "1.0s",

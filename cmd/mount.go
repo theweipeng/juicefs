@@ -266,8 +266,11 @@ func expandPathForEmbedded(addr string) string {
 
 func getVfsConf(c *cli.Context, metaConf *meta.Config, format *meta.Format, chunkConf *chunk.Config) *vfs.Config {
 	cfg := &vfs.Config{
-		Meta:   metaConf,
-		Format: *format,
+		ChangeSocket:     c.String("change-socket"),
+		ChangeIndexLimit: c.Int("change-index-limit"),
+		ChangeVolume:     c.String("change-volume"),
+		Meta:             metaConf,
+		Format:           *format,
 		Security: &vfs.SecurityConfig{
 			EnableCap:     c.Bool("enable-cap"),
 			EnableSELinux: c.Bool("enable-selinux"),
@@ -281,6 +284,10 @@ func getVfsConf(c *cli.Context, metaConf *meta.Config, format *meta.Format, chun
 		Pid:             os.Getpid(),
 		PPid:            os.Getppid(),
 		UMask:           0xFFFF,
+	}
+
+	if patterns, ok := c.Generic("change-glob").(*changeGlobs); ok {
+		cfg.ChangePatterns = append([]string(nil), (*patterns)...)
 	}
 
 	if c.IsSet("umask") {

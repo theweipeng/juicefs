@@ -85,6 +85,11 @@ func (fs *fileSystem) replyEntry(ctx *fuseContext, out *fuse.EntryOut, e *meta.E
 func (fs *fileSystem) Lookup(cancel <-chan struct{}, header *fuse.InHeader, name string, out *fuse.EntryOut) (status fuse.Status) {
 	ctx := fs.newContext(cancel, header)
 	defer releaseContext(ctx)
+	defer func() {
+		if fs.v.ModifiedSince(Ino(header.NodeId), ctx.start) {
+			out.SetEntryTimeout(0)
+		}
+	}()
 	entry, err := fs.v.Lookup(ctx, Ino(header.NodeId), name)
 	if err != 0 {
 		if fs.conf.NegEntryTimeout != 0 && err == syscall.ENOENT {
@@ -534,6 +539,14 @@ func Serve(v *vfs.VFS, options string, xattrs, ioctl bool) error {
 		}
 	}
 
+	v.InvalidateInode = func(ino meta.Ino) syscall.Errno { return syscall.Errno(fssrv.InodeNotify(uint64(ino), 0, 0)) }
+	if v.Conf.ChangeSocket != "" {
+		stop, err := v.StartChangeSocket()
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	fsserv = fssrv
 	fssrv.Serve()
 	return nil

@@ -76,6 +76,7 @@ type DataReader interface {
 	Open(inode Ino, length uint64) FileReader
 	Truncate(inode Ino, length uint64)
 	Invalidate(inode Ino, off, length uint64)
+	InvalidateFile(inode Ino)
 }
 
 type frange struct {
@@ -928,4 +929,11 @@ SLICES:
 		read++
 	}
 	return read
+}
+
+// InvalidateFile 丢弃读缓冲，不用伪造文件长度失效全部数据。
+func (r *dataReader) InvalidateFile(inode Ino) {
+	r.visit(inode, func(f *fileReader) {
+		f.visit(func(s *sliceReader) bool { s.invalidate(); return true })
+	})
 }

@@ -221,6 +221,8 @@ func (symCache *symlinkCache) doClean() {
 }
 
 type baseMeta struct {
+	cacheMu    sync.Mutex
+	cacheEpoch atomic.Uint64
 	sync.Mutex
 	addr string
 	conf *Config
@@ -897,6 +899,7 @@ func (m *baseMeta) resolveCase(ctx Context, parent Ino, name string) *Entry {
 }
 
 func (m *baseMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr *Attr, checkPerm bool) syscall.Errno {
+	epoch := m.cacheEpoch.Load()
 	if inode == nil || attr == nil {
 		return syscall.EINVAL // bad request
 	}
@@ -947,9 +950,13 @@ func (m *baseMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr
 		}
 	}
 	if st == 0 && attr.Typ == TypeDirectory && !isTrash(parent) {
-		m.parentMu.Lock()
-		m.dirParents[*inode] = parent
-		m.parentMu.Unlock()
+		m.cacheMu.Lock()
+		if epoch == m.cacheEpoch.Load() {
+			m.parentMu.Lock()
+			m.dirParents[*inode] = parent
+			m.parentMu.Unlock()
+		}
+		m.cacheMu.Unlock()
 	}
 	return st
 }
@@ -1067,6 +1074,7 @@ func (m *baseMeta) Access(ctx Context, inode Ino, mmask uint8, attr *Attr) sysca
 }
 
 func (m *baseMeta) GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
+	epoch := m.cacheEpoch.Load()
 	inode = m.checkRoot(inode)
 	if m.conf.OpenCache > 0 && m.of.Check(inode, attr) {
 		return 0
@@ -1098,23 +1106,32 @@ func (m *baseMeta) GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 		err = m.en.doGetAttr(ctx, inode, attr)
 	}
 	if err == 0 {
-		m.of.Update(inode, attr)
-		if attr.Typ == TypeDirectory && inode != RootInode && !isTrash(attr.Parent) {
-			m.parentMu.Lock()
-			m.dirParents[inode] = attr.Parent
-			m.parentMu.Unlock()
+		m.cacheMu.Lock()
+		if epoch == m.cacheEpoch.Load() {
+			m.of.Update(inode, attr)
+			if attr.Typ == TypeDirectory && inode != RootInode && !isTrash(attr.Parent) {
+				m.parentMu.Lock()
+				m.dirParents[inode] = attr.Parent
+				m.parentMu.Unlock()
+			}
 		}
+		m.cacheMu.Unlock()
 	}
 	return err
 }
 
 func (m *baseMeta) SetAttr(ctx Context, inode Ino, set uint16, sugidclearmode uint8, attr *Attr) syscall.Errno {
+	epoch := m.cacheEpoch.Load()
 	defer m.timeit("SetAttr", time.Now())
 	inode = m.checkRoot(inode)
 	err := m.en.doSetAttr(ctx, inode, set, sugidclearmode, attr)
 	if err == 0 {
 		m.of.InvalidateChunk(inode, invalidateAttrOnly)
-		m.of.Update(inode, attr)
+		m.cacheMu.Lock()
+		if epoch == m.cacheEpoch.Load() {
+			m.of.Update(inode, attr)
+		}
+		m.cacheMu.Unlock()
 	}
 	return err
 }
@@ -1316,6 +1333,7 @@ func (m *baseMeta) Link(ctx Context, inode, parent Ino, name string, attr *Attr)
 }
 
 func (m *baseMeta) ReadLink(ctx Context, inode Ino, path *[]byte) syscall.Errno {
+	epoch := m.cacheEpoch.Load()
 	noatime := m.conf.AtimeMode == NoAtime || m.conf.ReadOnly
 	if target, ok := m.symlinks.Load(inode); ok {
 		if noatime {
@@ -1348,6 +1366,11 @@ func (m *baseMeta) ReadLink(ctx Context, inode Ino, path *[]byte) syscall.Errno 
 		return syscall.EIO
 	}
 	*path = target
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if epoch != m.cacheEpoch.Load() {
+		return 0
+	}
 	if noatime {
 		m.symlinks.Store(inode, target)
 	} else {
@@ -1526,6 +1549,7 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 
 // caller makes sure inode is not special inode.
 func (m *baseMeta) touchAtime(ctx Context, inode Ino, attr *Attr) {
+	epoch := m.cacheEpoch.Load()
 	if m.conf.AtimeMode == NoAtime || m.conf.ReadOnly {
 		return
 	}
@@ -1543,13 +1567,18 @@ func (m *baseMeta) touchAtime(ctx Context, inode Ino, attr *Attr) {
 
 	updated, err := m.en.doTouchAtime(ctx, inode, attr, now)
 	if updated {
-		m.of.Update(inode, attr)
+		m.cacheMu.Lock()
+		if epoch == m.cacheEpoch.Load() {
+			m.of.Update(inode, attr)
+		}
+		m.cacheMu.Unlock()
 	} else if err != nil {
 		logger.Warnf("Update atime of inode %d: %s", inode, err)
 	}
 }
 
 func (m *baseMeta) Open(ctx Context, inode Ino, flags uint32, attr *Attr) (st syscall.Errno) {
+	epoch := m.cacheEpoch.Load()
 	if m.conf.ReadOnly && flags&(syscall.O_WRONLY|syscall.O_RDWR|syscall.O_TRUNC|syscall.O_APPEND) != 0 {
 		return syscall.EROFS
 	}
@@ -1597,7 +1626,15 @@ func (m *baseMeta) Open(ctx Context, inode Ino, flags uint32, attr *Attr) (st sy
 			return syscall.EPERM
 		}
 	}
+	m.cacheMu.Lock()
 	m.of.Open(inode, attr)
+	if epoch != m.cacheEpoch.Load() {
+		m.of.InvalidateChunk(inode, invalidateAllChunks)
+		if attr != nil {
+			attr.KeepCache = false
+		}
+	}
+	m.cacheMu.Unlock()
 	return 0
 }
 
@@ -1607,6 +1644,7 @@ func (m *baseMeta) InvalidateChunkCache(ctx Context, inode Ino, indx uint32) sys
 }
 
 func (m *baseMeta) Read(ctx Context, inode Ino, indx uint32, slices *[]Slice) (st syscall.Errno) {
+	epoch := m.cacheEpoch.Load()
 	defer func() {
 		if st == 0 {
 			m.touchAtime(ctx, inode, nil)
@@ -1644,7 +1682,11 @@ func (m *baseMeta) Read(ctx Context, inode Ino, indx uint32, slices *[]Slice) (s
 	}
 
 	*slices = buildSlice(ss)
-	m.of.CacheChunk(inode, indx, *slices)
+	m.cacheMu.Lock()
+	if epoch == m.cacheEpoch.Load() {
+		m.of.CacheChunk(inode, indx, *slices)
+	}
+	m.cacheMu.Unlock()
 	if !m.conf.ReadOnly && (len(ss) >= 5 || len(*slices) >= 5) {
 		go m.compactChunk(inode, indx, false, false)
 	}
@@ -3424,4 +3466,30 @@ func (m *baseMeta) LoadMetaV2(ctx Context, r io.Reader, opt *LoadOption) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+// InvalidateFileCache 只清理本地状态，不读取共享目录或修改元数据。
+func (m *baseMeta) InvalidateFileCache(inode Ino) {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	m.cacheEpoch.Add(1)
+	inode = m.checkRoot(inode)
+	m.of.InvalidateChunk(inode, invalidateAllChunks)
+	if _, loaded := m.symlinks.LoadAndDelete(inode); loaded {
+		m.symlinks.size.Add(-1)
+	}
+	m.parentMu.Lock()
+	delete(m.dirParents, inode)
+	m.parentMu.Unlock()
+}
+
+// CachedInodes 返回本机打开文件缓存的索引，不访问远端元数据。
+func (m *baseMeta) CachedInodes() []Ino {
+	m.of.Lock()
+	defer m.of.Unlock()
+	result := make([]Ino, 0, len(m.of.files))
+	for inode := range m.of.files {
+		result = append(result, inode)
+	}
+	return result
 }

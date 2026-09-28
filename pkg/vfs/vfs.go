@@ -121,6 +121,10 @@ type SecurityConfig struct {
 }
 
 type Config struct {
+	ChangeSocket         string
+	ChangeVolume         string
+	ChangePatterns       []string
+	ChangeIndexLimit     int
 	Meta                 *meta.Config
 	Format               meta.Format
 	Chunk                *chunk.Config
@@ -170,6 +174,16 @@ var (
 )
 
 func (v *VFS) Lookup(ctx Context, parent Ino, name string) (entry *meta.Entry, err syscall.Errno) {
+	defer func() {
+		if v.changes != nil {
+			if err == 0 && entry != nil {
+				v.changes.rememberEntry(parent, name, entry)
+			}
+			if err == syscall.ENOENT {
+				v.changes.remember(parent, name, 0)
+			}
+		}
+	}()
 	var inode Ino
 	var attr = &Attr{}
 	if parent == rootID || name == internalNodes[0].name { // 0 is the control file
@@ -236,6 +250,14 @@ func get_filetype(mode uint16) uint8 {
 
 func (v *VFS) Mknod(ctx Context, parent Ino, name string, mode uint16, cumask uint16, rdev uint32) (entry *meta.Entry, err syscall.Errno) {
 	defer func() {
+		if err == 0 && entry != nil {
+			if v.changes != nil {
+				v.changes.rememberEntry(parent, name, entry)
+			}
+			v.notifyEntry(parent, name, entry.Inode, "created", entry.Attr.Typ == meta.TypeDirectory)
+		}
+	}()
+	defer func() {
 		logit(ctx, "mknod", err, "(%d,%s,%s:0%04o,0x%08X):%s", parent, name, smode(mode), mode, rdev, (*Entry)(entry))
 	}()
 	if parent == rootID && IsSpecialName(name) {
@@ -263,6 +285,11 @@ func (v *VFS) Mknod(ctx Context, parent Ino, name string, mode uint16, cumask ui
 }
 
 func (v *VFS) Unlink(ctx Context, parent Ino, name string) (err syscall.Errno) {
+	defer func() {
+		if err == 0 {
+			v.notifyEntry(parent, name, 0, "removed", false)
+		}
+	}()
 	defer func() { logit(ctx, "unlink", err, "(%d,%s)", parent, name) }()
 	if parent == rootID && IsSpecialName(name) {
 		err = syscall.EPERM
@@ -280,6 +307,14 @@ func (v *VFS) Unlink(ctx Context, parent Ino, name string) (err syscall.Errno) {
 }
 
 func (v *VFS) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask uint16) (entry *meta.Entry, err syscall.Errno) {
+	defer func() {
+		if err == 0 && entry != nil {
+			if v.changes != nil {
+				v.changes.rememberEntry(parent, name, entry)
+			}
+			v.notifyEntry(parent, name, entry.Inode, "created", entry.Attr.Typ == meta.TypeDirectory)
+		}
+	}()
 	defer func() {
 		logit(ctx, "mkdir", err, "(%d,%s,%s:0%04o):%s", parent, name, smode(mode), mode, (*Entry)(entry))
 	}()
@@ -303,6 +338,11 @@ func (v *VFS) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask ui
 }
 
 func (v *VFS) Rmdir(ctx Context, parent Ino, name string) (err syscall.Errno) {
+	defer func() {
+		if err == 0 {
+			v.notifyEntry(parent, name, 0, "removed", true)
+		}
+	}()
 	defer func() { logit(ctx, "rmdir", err, "(%d,%s)", parent, name) }()
 	if len(name) > maxName {
 		err = syscall.ENAMETOOLONG
@@ -316,6 +356,14 @@ func (v *VFS) Rmdir(ctx Context, parent Ino, name string) (err syscall.Errno) {
 }
 
 func (v *VFS) Symlink(ctx Context, path string, parent Ino, name string) (entry *meta.Entry, err syscall.Errno) {
+	defer func() {
+		if err == 0 && entry != nil {
+			if v.changes != nil {
+				v.changes.rememberEntry(parent, name, entry)
+			}
+			v.notifyEntry(parent, name, entry.Inode, "created", entry.Attr.Typ == meta.TypeDirectory)
+		}
+	}()
 	defer func() {
 		logit(ctx, "symlink", err, "(%d,%s,%s):%s", parent, name, path, (*Entry)(entry))
 	}()
@@ -365,6 +413,7 @@ func (v *VFS) Rename(ctx Context, parent Ino, name string, newparent Ino, newnam
 	var attr = &Attr{}
 	err = v.Meta.Rename(ctx, parent, name, newparent, newname, flags, &inode, attr)
 	if err == 0 {
+		v.notifyRename(parent, name, newparent, newname, inode, attr.Typ == meta.TypeDirectory || flags&meta.RenameExchange != 0, flags&meta.RenameExchange != 0)
 		v.invalidateDirHandle(parent, name, 0, nil)
 		v.invalidateDirHandle(newparent, newname, 0, nil)
 		v.invalidateDirHandle(newparent, newname, inode, attr)
@@ -392,6 +441,10 @@ func (v *VFS) Link(ctx Context, ino Ino, newparent Ino, newname string) (entry *
 	var attr = &Attr{}
 	err = v.Meta.Link(ctx, ino, newparent, newname, attr)
 	if err == 0 {
+		if v.changes != nil {
+			v.changes.rememberEntry(newparent, newname, &meta.Entry{Inode: ino, Attr: attr})
+		}
+		v.notifyEntry(newparent, newname, ino, "linked", false)
 		entry = &meta.Entry{Inode: ino, Attr: attr}
 		v.invalidateDirHandle(newparent, newname, ino, attr)
 	}
@@ -466,6 +519,11 @@ func (v *VFS) Readdir(ctx Context, ino Ino, size uint32, off int, fh uint64, plu
 	if entries, err = h.dirHandler.List(ctx, off); err != 0 {
 		return
 	}
+	if v.changes != nil {
+		for _, e := range entries {
+			v.changes.rememberEntry(ino, string(e.Name), e)
+		}
+	}
 	readAt = h.readAt
 	logger.Debugf("readdir: [%d:%d] %d entries, offset=%d", ino, fh, len(entries), off)
 	return
@@ -496,6 +554,14 @@ func (v *VFS) Releasedir(ctx Context, ino Ino, fh uint64) int {
 const O_TMPFILE = 020000000
 
 func (v *VFS) Create(ctx Context, parent Ino, name string, mode uint16, cumask uint16, flags uint32) (entry *meta.Entry, fh uint64, err syscall.Errno) {
+	defer func() {
+		if err == 0 && entry != nil {
+			if v.changes != nil {
+				v.changes.rememberEntry(parent, name, entry)
+			}
+			v.notifyEntry(parent, name, entry.Inode, "created", entry.Attr.Typ == meta.TypeDirectory)
+		}
+	}()
 	defer func() {
 		logit(ctx, "create", err, "(%d,%s,%s:0%04o):%s [fh:%d]", parent, name, smode(mode), mode, (*Entry)(entry), fh)
 	}()
@@ -581,11 +647,19 @@ func (v *VFS) Open(ctx Context, ino Ino, flags uint32) (entry *meta.Entry, fh ui
 		v.UpdateLength(ino, attr)
 		fh = v.newFileHandle(ino, attr.Length, flags)
 		entry = &meta.Entry{Inode: ino, Attr: attr}
+		if v.changes != nil {
+			v.changes.opened(ino, attr)
+		}
 	}
 	return
 }
 
 func (v *VFS) Truncate(ctx Context, ino Ino, size int64, fh uint64, attr *Attr) (err syscall.Errno) {
+	defer func() {
+		if err == 0 {
+			v.notifyCommitted(ino)
+		}
+	}()
 	// defer func() { logit(ctx, "truncate (%d,%d): %s", ino, size, strerr(err)) }()
 	if IsSpecialNode(ino) {
 		err = syscall.EPERM
@@ -855,6 +929,11 @@ func (v *VFS) Write(ctx Context, ino Ino, buf []byte, off, fh uint64) (err sysca
 }
 
 func (v *VFS) Fallocate(ctx Context, ino Ino, mode uint8, off, size int64, fh uint64) (err syscall.Errno) {
+	defer func() {
+		if err == 0 {
+			v.notifyCommitted(ino)
+		}
+	}()
 	defer func() { logit(ctx, "fallocate", err, "(%d,%d,%d,%d)", ino, mode, off, size) }()
 	if off < 0 || size <= 0 {
 		err = syscall.EINVAL
@@ -905,6 +984,11 @@ func (v *VFS) Fallocate(ctx Context, ino Ino, mode uint8, off, size int64, fh ui
 }
 
 func (v *VFS) CopyFileRange(ctx Context, nodeIn Ino, fhIn, offIn uint64, nodeOut Ino, fhOut, offOut, size uint64, flags uint32) (copied uint64, err syscall.Errno) {
+	defer func() {
+		if err == 0 {
+			v.notifyCommitted(nodeOut)
+		}
+	}()
 	defer func() {
 		logit(ctx, "copy_file_range", err, "(%d,%d,%d,%d,%d,%d)", nodeIn, offIn, nodeOut, offOut, size, flags)
 	}()
@@ -1214,6 +1298,8 @@ func (v *VFS) RemoveXattr(ctx Context, ino Ino, name string) (err syscall.Errno)
 var logger = utils.GetLogger("juicefs")
 
 type VFS struct {
+	changes         *changeNotifier
+	InvalidateInode func(ino meta.Ino) syscall.Errno
 	Conf            *Config
 	Meta            meta.Meta
 	Store           chunk.ChunkStore
@@ -1250,6 +1336,14 @@ func NewVFS(conf *Config, m meta.Meta, store chunk.ChunkStore, registerer promet
 		modifiedAt:  make(map[meta.Ino]time.Time),
 		nextfh:      1,
 		registry:    registry,
+	}
+
+	if conf.ChangeSocket != "" {
+		v.changes = newChangeNotifier(conf.ChangePatterns)
+		if conf.ChangeIndexLimit != 0 {
+			v.changes.index.limit = conf.ChangeIndexLimit
+		}
+		writer.(*dataWriter).committed = v.notifyCommitted
 	}
 
 	n := getInternalNode(ConfigInode)
@@ -1341,6 +1435,45 @@ func initVFSMetrics(v *VFS, writer DataWriter, reader DataReader, registerer pro
 		return float64(len(v.handles))
 	})
 	_ = registerer.Register(handlersGause)
+	if n := v.changes; n != nil {
+		_ = registerer.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "change_notification_path_edges", Help: "Locally indexed directory entries."}, func() float64 {
+			n.Lock()
+			defer n.Unlock()
+			return float64(len(n.index.edges))
+		}))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "change_notifications_total", Help: "Matched committed change events."}, func() float64 {
+			n.Lock()
+			defer n.Unlock()
+			return float64(n.sequence)
+		}))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "change_notification_overflows_total", Help: "Subscriber queue overflows."}, func() float64 {
+			n.Lock()
+			defer n.Unlock()
+			return float64(n.overflows)
+		}))
+		for name, metric := range map[string]struct {
+			help  string
+			value func() float64
+		}{
+			"change_notification_path_records": {"Indexed inode and directory-entry relations.", func() float64 { return float64(n.index.size()) }},
+			"change_notification_path_retired": {"Old relations awaiting successful invalidation.", func() float64 { return float64(n.index.retired.Len()) }},
+			"change_notification_path_limit":   {"Maximum indexed relations.", func() float64 { return float64(n.index.limit) }},
+			"change_notification_index_incomplete": {"One if capacity exhaustion requires a remount.", func() float64 {
+				if n.index.incomplete {
+					return 1
+				}
+				return 0
+			}},
+		} {
+			value := metric.value
+			_ = registerer.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: metric.help}, func() float64 { n.Lock(); defer n.Unlock(); return value() }))
+		}
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "change_notification_path_reclaimed_total", Help: "Safely reclaimed path relations."}, func() float64 { n.Lock(); defer n.Unlock(); return float64(n.index.reclaimed) }))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "change_notification_index_overflows_total", Help: "Path relations rejected at capacity."}, func() float64 { n.Lock(); defer n.Unlock(); return float64(n.index.overflows) }))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "change_notification_reclaim_failures_total", Help: "Reclamation attempts retained for retry."}, func() float64 { return float64(n.reclaimFailures.Load()) }))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "cache_invalidation_requests_total", Help: "Local cache invalidation requests."}, func() float64 { return float64(n.invalidations.Load()) }))
+		_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "cache_invalidation_failures_total", Help: "Failed local cache invalidation requests."}, func() float64 { return float64(n.invalidationFailures.Load()) }))
+	}
 	InitMemoryBufferMetrics(writer, reader, registerer)
 }
 

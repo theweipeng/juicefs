@@ -1,0 +1,142 @@
+[
+  {
+    "pattern": "**/skills/**",
+    "path": "/agents/a/skills/demo/run.py",
+    "matched": true
+  },
+  {
+    "pattern": "**/skills/**",
+    "path": "/skills/demo/SKILL.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/skills/**",
+    "path": "/workspace/report.md",
+    "matched": false
+  },
+  {
+    "pattern": "**/AGENTS.md",
+    "path": "/AGENTS.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/AGENTS.md",
+    "path": "/a/b/AGENTS.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/AGENTS.md",
+    "path": "/a/agents.md",
+    "matched": false
+  },
+  {
+    "pattern": "agents/*/mcp.json",
+    "path": "/agents/alice/mcp.json",
+    "matched": true
+  },
+  {
+    "pattern": "agents/*/mcp.json",
+    "path": "/agents/team/alice/mcp.json",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b.md",
+    "path": "/a/b.md",
+    "matched": true
+  },
+  {
+    "pattern": "a/**/b.md",
+    "path": "/a/x/y/b.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/file?.md",
+    "path": "/file一.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/file?.md",
+    "path": "/fileab.md",
+    "matched": false
+  },
+  {
+    "pattern": "**/[ab].md",
+    "path": "/a.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/[a-c].md",
+    "path": "/b.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/[!ab].md",
+    "path": "/c.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/[!ab].md",
+    "path": "/a.md",
+    "matched": false
+  },
+  {
+    "pattern": "**/{AGENTS,SOUL}.md",
+    "path": "/SOUL.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/{AGENTS,SOUL}.md",
+    "path": "/TOOLS.md",
+    "matched": false
+  },
+  {
+    "pattern": "**/{a,{b,c}}.md",
+    "path": "/c.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/报告.md",
+    "path": "/报告.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/😀.md",
+    "path": "/a/😀.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/skills/**",
+    "path": "/skills/a\nb.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/skills/**",
+    "path": "/.yohu/skills/.hidden",
+    "matched": true
+  },
+  {
+    "pattern": "**/file\\*.md",
+    "path": "/file*.md",
+    "matched": true
+  },
+  {
+    "pattern": "**/file\\*.md",
+    "path": "/fileABC.md",
+    "matched": false
+  },
+  {
+    "pattern": "**/file\\?.md",
+    "path": "/file?.md",
+    "matched": true
+  },
+  {
+    "pattern": "/agents/**",
+    "path": "/agents/a/x",
+    "matched": true
+  },
+  {
+    "pattern": "**/ padded.md ",
+    "path": "/a/ padded.md ",
+    "matched": true
+  }
+]

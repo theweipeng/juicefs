@@ -198,6 +198,9 @@ func (c *chunkWriter) commitThread() {
 		if err == 0 {
 			var ss = meta.Slice{Id: s.id, Size: s.length, Off: s.soff, Len: s.slen}
 			err = f.w.m.Write(meta.Background(), f.inode, c.indx, s.off, ss, s.lastMod)
+			if err == 0 && f.w.committed != nil {
+				f.w.committed(f.inode)
+			}
 			f.w.reader.Invalidate(f.inode, uint64(c.indx)*meta.ChunkSize+uint64(s.off), uint64(ss.Len))
 		}
 
@@ -423,6 +426,7 @@ func (f *fileWriter) Truncate(length uint64) {
 }
 
 type dataWriter struct {
+	committed func(Ino)
 	sync.Mutex
 	m          meta.Meta
 	store      chunk.ChunkStore

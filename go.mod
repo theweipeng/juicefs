@@ -3,6 +3,7 @@ module github.com/juicedata/juicefs
 go 1.21.0
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.2
 	cloud.google.com/go/compute/metadata v0.5.2
 	cloud.google.com/go/storage v1.48.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.9.2
