@@ -2,6 +2,7 @@
 """Linux 多挂载的真实缓存失效验收。"""
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,7 @@ def connect(path):
         return json.loads(stream.readline())
     send({"type": "hello", "protocol": 1, "volume": "test"})
     assert receive()["protocol"] == 1
-    send({"type": "subscribe", "id": "subscribe", "patterns": ["**"]})
+    send({"type": "subscribe", "id": "subscribe", "patterns": ["skill/**", "moved/**"]})
     assert receive()["ok"]
     return connection, send, receive
 
@@ -42,7 +43,8 @@ def main():
         try:
             for name, mount in zip(("a", "b"), mounts):
                 mount.mkdir()
-                process = subprocess.Popen([binary, "mount", "--cache-dir", str(root / (name + "-cache")), "--attr-cache=180", "--entry-cache=180", "--dir-entry-cache=180", "--negative-entry-cache=180", "--open-cache=180", "--change-socket", str(root / (name + ".sock")), "--change-volume=test", "--change-glob=**", "--backup-meta=0", "--no-usage-report", metadata, str(mount)])
+                with (root / (name + ".log")).open("wb") as log:
+                    process = subprocess.Popen([binary, "mount", "--cache-dir", str(root / (name + "-cache")), "--attr-cache=180", "--entry-cache=180", "--dir-entry-cache=180", "--negative-entry-cache=180", "--open-cache=180", "--change-socket", str(root / (name + ".sock")), "--change-volume=test", "--change-glob=skill/**", "--change-glob=moved/**", "--backup-meta=0", "--no-usage-report", metadata, str(mount)], stdout=log, stderr=subprocess.STDOUT)
                 processes.append(process)
             deadline = time.monotonic() + 30
             while not all(os.path.ismount(mount) for mount in mounts):
@@ -52,13 +54,60 @@ def main():
             a, b = mounts
             connection_a, _, receive_a = connect(root / "a.sock")
             connection_b, send_b, receive_b = connect(root / "b.sock")
-            def invalidate(path, recursive=False):
-                send_b({"type": "invalidate", "id": "invalidate", "changes": [{"path": path, "recursive": recursive}]})
+            def notification_count(mount):
+                return next(
+                    float(line.split()[1]) for line in (mount / ".stats").read_text().splitlines()
+                    if line.startswith("juicefs_change_notifications_total ")
+                )
+            before_noise = notification_count(a)
+            (a / "_runtime/llm_snapshots/run").mkdir(parents=True)
+            (a / "_runtime/llm_snapshots/run/output.txt").write_text("not subscribed")
+            assert notification_count(a) == before_noise
+            request_sequence = 0
+            def request_invalidation(path, recursive=False, patterns=None):
+                nonlocal request_sequence
+                request_sequence += 1
+                request_id = f"invalidate-{request_sequence}"
+                request = {"type": "invalidate", "id": request_id, "changes": [{"path": path, "recursive": recursive}]}
+                if patterns is not None:
+                    request["patterns"] = patterns
+                send_b(request)
                 while True:
                     response = receive_b()
-                    if response.get("id") == "invalidate":
-                        assert response["ok"], response
-                        return
+                    if response.get("id") == request_id:
+                        return response
+            def invalidate(path, recursive=False):
+                response = request_invalidation(path, recursive)
+                assert response["ok"], response
+            response = request_invalidation("/../invalid")
+            assert not response["ok"] and response["errno"] == errno.EINVAL, response
+            assert response["failure_stage"] == "validate", response
+            # fsync 后保持可写句柄，真实挂载必须指出具体占用及打开者。
+            with (b / "busy.txt").open("w") as stream:
+                stream.write("committed but still open")
+                stream.flush()
+                os.fsync(stream.fileno())
+                response = request_invalidation("/busy.txt")
+                assert not response["ok"] and response["errno"] == errno.EBUSY, response
+                assert response["failure_stage"] == "busy_handles", response
+            deadline = time.monotonic() + 5
+            while True:
+                records = [
+                    json.JSONDecoder().raw_decode(line.split("[cache-invalidation] ", 1)[1])[0]
+                    for line in (root / "b.log").read_text().splitlines()
+                    if "[cache-invalidation] " in line
+                ]
+                matches = [record for record in records if record.get("request_id") == response["id"] and record.get("event") == "finished"]
+                if matches:
+                    record = matches[-1]
+                    assert record["busy_opener_pid"] == os.getpid(), record
+                    assert record["busy_paths"] == ["/busy.txt"], record
+                    assert record["busy_inode"] > 0 and record["busy_fh"] >= 0, record
+                    break
+                assert time.monotonic() < deadline, records
+                time.sleep(0.05)
+            invalidate("/busy.txt")
+            assert "juicefs_cache_invalidation_stage_failures_total" in (b / ".stats").read_text()
             (a / "skill").mkdir()
             (a / "skill/SKILL.md").write_text("old")
             assert (b / "skill/SKILL.md").read_text() == "old"
@@ -69,9 +118,16 @@ def main():
             (a / "skill/new.txt").write_text("created")
             # 确认由挂载处理的实际提交产生通知。
             assert receive_a()["type"] in {"changed", "resync_required"}
-            invalidate("/skill", True)
-            assert (b / "skill/SKILL.md").read_text() == "new"
-            assert (b / "skill/new.txt").read_text() == "created"
+            invalidate("/_runtime", True)
+            with (b / "_runtime/unrelated.txt").open("w") as unrelated:
+                unrelated.write("writer outside subscribed skill")
+                unrelated.flush()
+                os.fsync(unrelated.fileno())
+                response = request_invalidation("/", True, ["skill/**", "moved/**"])
+                assert response["ok"], response
+                invalidate("/skill", True)
+                assert (b / "skill/SKILL.md").read_text() == "new"
+                assert (b / "skill/new.txt").read_text() == "created"
             (a / "skill/SKILL.md").unlink()
             invalidate("/skill/SKILL.md")
             assert not (b / "skill/SKILL.md").exists()
@@ -135,6 +191,12 @@ def main():
             connection_b.shutdown(socket.SHUT_RDWR)
             connection_b.close()
             print("多挂载的缓存失效、连续替换与断连后的索引回收验收通过")
+        except BaseException:
+            for name in ("a", "b"):
+                log_path = root / (name + ".log")
+                if log_path.exists():
+                    print(f"挂载 {name} 失败诊断（末尾 64 KiB）：\n{log_path.read_text()[-65536:]}")
+            raise
         finally:
             for mount in mounts:
                 subprocess.run([binary, "umount", str(mount)], check=False)

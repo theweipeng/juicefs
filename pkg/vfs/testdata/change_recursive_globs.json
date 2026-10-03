@@ -1,0 +1,137 @@
+[
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu",
+    "matched": true
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme",
+    "matched": true
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme/agents/alice/skills/demo",
+    "matched": true
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme/agents/alice/skills/demo/scripts",
+    "matched": true
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme/_runtime/llm_snapshots/run",
+    "matched": false
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme/channels/demo/tasks/run",
+    "matched": false
+  },
+  {
+    "pattern": ".yohu/agency/*/agents/*/skills/**",
+    "path": "/.yohu/agency/acme/agents/alice/workspaces/copy/skills",
+    "matched": false
+  },
+  {
+    "pattern": ".yohu/agency/*/wiki/**",
+    "path": "/.yohu/agency/acme/channels/demo/tasks/run/.superdata/wiki",
+    "matched": false
+  },
+  {
+    "pattern": ".yohu/agency/*/wiki/**",
+    "path": "/.yohu/agency/acme/wiki",
+    "matched": true
+  },
+  {
+    "pattern": "agents/*/{skills,projects/*/skills}/**",
+    "path": "/agents/alice/projects/demo",
+    "matched": true
+  },
+  {
+    "pattern": "agents/*/{skills,projects/*/skills}/**",
+    "path": "/agents/alice/projects/demo/skills",
+    "matched": true
+  },
+  {
+    "pattern": "agents/*/{skills,projects/*/skills}/**",
+    "path": "/agents/alice/projects/demo/files",
+    "matched": false
+  },
+  {
+    "pattern": "agents/*/{skills,projects/*/skills}/**",
+    "path": "/agents/alice/workspaces",
+    "matched": false
+  },
+  {
+    "pattern": "a/{b/c,d/{e,f}}/SKILL.md",
+    "path": "/a/b",
+    "matched": true
+  },
+  {
+    "pattern": "a/{b/c,d/{e,f}}/SKILL.md",
+    "path": "/a/d",
+    "matched": true
+  },
+  {
+    "pattern": "a/{b/c,d/{e,f}}/SKILL.md",
+    "path": "/a/d/e",
+    "matched": true
+  },
+  {
+    "pattern": "a/{b/c,d/{e,f}}/SKILL.md",
+    "path": "/a/d/g",
+    "matched": false
+  },
+  {
+    "pattern": "a/{b/c,d/{e,f}}/SKILL.md",
+    "path": "/a/b/c/other",
+    "matched": false
+  },
+  {
+    "pattern": "agents\\/{alice,bob}/skills/**",
+    "path": "/agents",
+    "matched": true
+  },
+  {
+    "pattern": "agents\\/{alice,bob}/skills/**",
+    "path": "/agents/alice",
+    "matched": true
+  },
+  {
+    "pattern": "agents\\/{alice,bob}/skills/**",
+    "path": "/agents/carol",
+    "matched": false
+  },
+  {
+    "pattern": "a/[bc]/SKILL.md",
+    "path": "/a/b",
+    "matched": true
+  },
+  {
+    "pattern": "a/[bc]/SKILL.md",
+    "path": "/a/d",
+    "matched": false
+  },
+  {
+    "pattern": "a/\\{literal\\}/SKILL.md",
+    "path": "/a/{literal}",
+    "matched": true
+  },
+  {
+    "pattern": "a/\\{literal\\}/SKILL.md",
+    "path": "/a/other",
+    "matched": false
+  },
+  {
+    "pattern": "agents/*/skills/**",
+    "path": "/",
+    "matched": true
+  },
+  {
+    "pattern": "agents/*/skills/**",
+    "path": "/agents",
+    "matched": true
+  }
+]

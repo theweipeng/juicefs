@@ -36,28 +36,32 @@ type pathReceipt struct {
 
 // 当前关系与待失效的旧关系分别排队；只在失效成功后按代次回收。
 type pathIndex struct {
-	edges      map[pathEdge]map[Ino]*pathRecord
-	parents    map[Ino]map[pathEdge]*pathRecord
-	current    map[pathEdge]*pathRecord
-	links      map[Ino]uint32
-	children   map[Ino]int
-	active     list.List
-	retired    list.List
-	generation uint64
-	limit      int
-	incomplete bool
-	overflows  uint64
-	reclaimed  uint64
+	edges          map[pathEdge]map[Ino]*pathRecord
+	parents        map[Ino]map[pathEdge]*pathRecord
+	current        map[pathEdge]*pathRecord
+	links          map[Ino]uint32
+	children       map[Ino]int
+	entries        map[Ino]map[string]map[Ino]*pathRecord
+	positionChecks map[Ino]bool
+	active         list.List
+	retired        list.List
+	generation     uint64
+	limit          int
+	incomplete     bool
+	overflows      uint64
+	reclaimed      uint64
 }
 
 func newPathIndex() *pathIndex {
 	return &pathIndex{
-		edges:    make(map[pathEdge]map[Ino]*pathRecord),
-		parents:  make(map[Ino]map[pathEdge]*pathRecord),
-		current:  make(map[pathEdge]*pathRecord),
-		links:    make(map[Ino]uint32),
-		children: make(map[Ino]int),
-		limit:    DefaultChangeIndexLimit,
+		edges:          make(map[pathEdge]map[Ino]*pathRecord),
+		parents:        make(map[Ino]map[pathEdge]*pathRecord),
+		current:        make(map[pathEdge]*pathRecord),
+		links:          make(map[Ino]uint32),
+		children:       make(map[Ino]int),
+		entries:        make(map[Ino]map[string]map[Ino]*pathRecord),
+		positionChecks: make(map[Ino]bool),
+		limit:          DefaultChangeIndexLimit,
 	}
 }
 
@@ -70,6 +74,16 @@ func (p *pathIndex) remember(parent Ino, name string, inode Ino, links ...uint32
 		return
 	}
 	edge := pathEdge{parent, name}
+	// 普通文件操作只做常数级检查；父链缺口与目录历史关系在失效前校验。
+	unknownParent := parent != rootID && (len(p.parents[parent]) == 0 || p.links[parent] != 1)
+	if previous := p.current[edge]; previous == nil || previous.inode != inode {
+		if p.children[inode] > 0 {
+			p.positionChecks[inode] = true
+		}
+		if previous != nil && p.children[previous.inode] > 0 {
+			p.positionChecks[previous.inode] = true
+		}
+	}
 	p.generation++
 	if previous := p.current[edge]; previous != nil && previous.inode != inode {
 		p.active.Remove(previous.element)
@@ -89,6 +103,10 @@ func (p *pathIndex) remember(parent Ino, name string, inode Ino, links ...uint32
 		record = &pathRecord{edge: edge, inode: inode}
 		if p.edges[edge] == nil {
 			p.edges[edge] = make(map[Ino]*pathRecord)
+			if p.entries[parent] == nil {
+				p.entries[parent] = make(map[string]map[Ino]*pathRecord)
+			}
+			p.entries[parent][name] = p.edges[edge]
 		}
 		p.edges[edge][inode] = record
 		p.children[parent]++
@@ -111,9 +129,34 @@ func (p *pathIndex) remember(parent Ino, name string, inode Ino, links ...uint32
 	record.seen = time.Now()
 	record.element = p.active.PushBack(record)
 	p.current[edge] = record
+	if unknownParent {
+		p.positionChecks[parent] = true
+	}
 	if inode != 0 && len(links) > 0 {
 		p.links[inode] = links[0]
+		if p.children[inode] > 0 && links[0] != 1 {
+			p.positionChecks[inode] = true
+		}
 	}
+}
+
+// 后代仍有缓存时，只能回收有其他完整父链承接定位的历史目录关系。
+func (p *pathIndex) canRemove(r *pathRecord) bool {
+	if r.inode == 0 || p.children[r.inode] == 0 {
+		return true
+	}
+	if !r.retired {
+		return false
+	}
+	for edge, other := range p.parents[r.inode] {
+		if other == r {
+			continue
+		}
+		if _, complete := p.paths(edge.parent, true); complete {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *pathIndex) remove(receipt pathReceipt) bool {
@@ -121,7 +164,7 @@ func (p *pathIndex) remove(receipt pathReceipt) bool {
 	if p.edges[r.edge][r.inode] != r || r.generation != receipt.generation {
 		return false
 	}
-	if !r.retired && r.inode != 0 && p.children[r.inode] > 0 {
+	if !p.canRemove(r) {
 		return false
 	}
 	if r.retired {
@@ -130,12 +173,20 @@ func (p *pathIndex) remove(receipt pathReceipt) bool {
 		p.active.Remove(r.element)
 	}
 	delete(p.edges[r.edge], r.inode)
+	if p.children[r.inode] > 0 {
+		p.positionChecks[r.inode] = true
+	}
 	p.children[r.edge.parent]--
 	if p.children[r.edge.parent] == 0 {
 		delete(p.children, r.edge.parent)
+		delete(p.positionChecks, r.edge.parent)
 	}
 	if len(p.edges[r.edge]) == 0 {
 		delete(p.edges, r.edge)
+		delete(p.entries[r.edge.parent], r.edge.name)
+		if len(p.entries[r.edge.parent]) == 0 {
+			delete(p.entries, r.edge.parent)
+		}
 	}
 	if p.current[r.edge] == r {
 		delete(p.current, r.edge)
@@ -168,6 +219,9 @@ func (p *pathIndex) candidates(now time.Time) []pathReceipt {
 	result := make([]pathReceipt, 0, changeIndexBatch)
 	for e := p.retired.Front(); e != nil && len(result) < changeIndexBatch; e = e.Next() {
 		r := e.Value.(*pathRecord)
+		if !p.canRemove(r) {
+			continue
+		}
 		result = append(result, pathReceipt{r, r.generation})
 	}
 	pressure := p.underPressure()
@@ -222,13 +276,14 @@ func (p *pathIndex) paths(inode Ino, historical bool) ([]string, bool) {
 		}
 		seen[ino] = true
 		defer delete(seen, ino)
-		current := 0
+		positioned := 0
 		for _, record := range p.parents[ino] {
-			if !record.retired {
-				current++
+			// 历史缓存定位包含已撤销的名字；内容通知仍要求当前命名空间完整。
+			if historical || !record.retired {
+				positioned++
 			}
 		}
-		if p.links[ino] == 0 || uint32(current) < p.links[ino] {
+		if p.links[ino] == 0 || uint32(positioned) < p.links[ino] {
 			complete = false
 		}
 		found := false

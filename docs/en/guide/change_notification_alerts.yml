@@ -1,0 +1,58 @@
+groups:
+  - name: juicefs-cache-invalidation
+    rules:
+      - alert: JuiceFSInvalidationStalled
+        expr: juicefs_cache_invalidation_oldest_in_flight_age_seconds{source="control"} > 5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS invalidation is not completing on {{ $labels.instance }}"
+          description: "Find [cache-invalidation] event=blocked in mount logs. Inspect stage and lock_owner before changing the client timeout."
+      - alert: JuiceFSInvalidationFailed
+        expr: sum by (instance, vol_name, mp) (increase(juicefs_cache_invalidation_results_total{source="control",result!="ok",result!="busy"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS cache invalidation failed on {{ $labels.instance }}"
+          description: "Correlate the host request_id with mount event=finished. Inspect errno, failure_stage and failure_samples."
+      - alert: JuiceFSInvalidationBusyRepeatedly
+        expr: sum by (instance, vol_name, mp) (increase(juicefs_cache_invalidation_results_total{source="control",result="busy"}[5m])) >= 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS repeatedly rejects invalidation for writable handles"
+          description: "Inspect busy_paths, busy_opener_pid and busy_open_age_ms. A single short-lived busy result does not trigger this alert."
+      - alert: JuiceFSChangeIndexReclamationFailed
+        expr: sum by (instance, vol_name, mp) (increase(juicefs_cache_invalidation_results_total{source="reclaim",result!="ok",result!="busy"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS cannot reclaim local path records safely"
+          description: "Inspect source=reclaim failures in mount logs and retired record growth. Expected active-handle retention is excluded."
+      - alert: JuiceFSInvalidationSlow
+        expr: histogram_quantile(0.99, sum by (instance, vol_name, mp, le) (rate(juicefs_cache_invalidation_duration_seconds_bucket{source="control"}[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS invalidation p99 exceeds one second"
+          description: "Compare cache_invalidation_stage_duration_seconds for lock wait, index matching, kernel notifications and ACK delivery."
+      - alert: JuiceFSChangeIndexIncomplete
+        expr: juicefs_change_notification_index_incomplete > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "JuiceFS change index cannot guarantee cache invalidation"
+          description: "Invalidate ACKs fail with ENOBUFS. Plan a remount with appropriate capacity; freeing index records alone does not restore completeness."
+      - alert: JuiceFSChangeIndexNearCapacity
+        expr: juicefs_change_notification_path_records / juicefs_change_notification_path_limit > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JuiceFS local change index is above 85% capacity"
+          description: "Inspect retired records, reclamation failures and active handles before the index reaches its hard limit."

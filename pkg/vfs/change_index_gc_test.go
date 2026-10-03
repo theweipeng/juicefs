@@ -21,6 +21,24 @@ func changeGCFixture(t *testing.T) *VFS {
 	return v
 }
 
+func TestChangeIndexRetainsLastHistoricalParentUntilChildrenAreReclaimed(t *testing.T) {
+	v := changeGCFixture(t)
+	v.changes.remember(rootID, "unrelated", 10)
+	v.changes.remember(10, "cached-child", 11)
+	v.changes.remember(rootID, "skill", 20)
+	v.changes.remember(rootID, "unrelated", 0)
+	p := v.changes.index
+	parent := p.edges[pathEdge{rootID, "unrelated"}][10]
+	require.False(t, p.remove(pathReceipt{parent, parent.generation}))
+	paths, complete := p.paths(10, true)
+	require.True(t, complete)
+	require.Equal(t, []string{"/unrelated"}, paths)
+	require.NoError(t, v.InvalidatePaths([]FileChange{{Path: "/skill", Recursive: true}}))
+	child := p.current[pathEdge{10, "cached-child"}]
+	require.True(t, p.remove(pathReceipt{child, child.generation}))
+	require.True(t, p.remove(pathReceipt{parent, parent.generation}))
+}
+
 func TestChangeIndexReplacementHistoryReclaimed(t *testing.T) {
 	v := changeGCFixture(t)
 	var invalidated int
@@ -101,7 +119,7 @@ func TestChangeIndexRenameAndHardLinkCompleteness(t *testing.T) {
 	n := v.changes
 	n.remember(rootID, "old", 10)
 	n.remember(10, "file", 11)
-	v.notifyRename(rootID, "old", rootID, "new", 10, true)
+	v.notifyRename(rootID, "old", rootID, "new", 10, true, 0)
 	paths, complete := n.index.paths(11, false)
 	require.True(t, complete)
 	require.Equal(t, []string{"/new/file"}, paths)
@@ -127,7 +145,7 @@ func TestChangeIndexRenameAndHardLinkCompleteness(t *testing.T) {
 func TestChangeIndexTruncationAndCyclesRequireResync(t *testing.T) {
 	v := changeGCFixture(t)
 	q := make(chan changeFrame, 2)
-	v.changes.subscribers[q] = true
+	v.changes.subscribers[q] = nil
 	for i := 0; i < 4097; i++ {
 		v.changes.remember(rootID, fmt.Sprintf("f%04d", i), 10)
 	}

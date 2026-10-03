@@ -411,9 +411,11 @@ func (v *VFS) Rename(ctx Context, parent Ino, name string, newparent Ino, newnam
 
 	var inode Ino
 	var attr = &Attr{}
-	err = v.Meta.Rename(ctx, parent, name, newparent, newname, flags, &inode, attr)
+	other := &meta.Entry{}
+	err = v.Meta.Rename(ctx, parent, name, newparent, newname, flags, &inode, attr, other)
 	if err == 0 {
-		v.notifyRename(parent, name, newparent, newname, inode, attr.Typ == meta.TypeDirectory || flags&meta.RenameExchange != 0, flags&meta.RenameExchange != 0)
+		recursive := attr.Typ == meta.TypeDirectory || other.Attr != nil && other.Attr.Typ == meta.TypeDirectory
+		v.notifyRename(parent, name, newparent, newname, inode, recursive, other.Inode)
 		v.invalidateDirHandle(parent, name, 0, nil)
 		v.invalidateDirHandle(newparent, newname, 0, nil)
 		v.invalidateDirHandle(newparent, newname, inode, attr)
@@ -590,7 +592,7 @@ func (v *VFS) Create(ctx Context, parent Ino, name string, mode uint16, cumask u
 	}
 	if err == 0 {
 		v.UpdateLength(inode, attr)
-		fh = v.newFileHandle(inode, attr.Length, flags)
+		fh = v.newFileHandle(ctx, inode, attr.Length, flags)
 		entry = &meta.Entry{Inode: inode, Attr: attr}
 		v.invalidateDirHandle(parent, name, inode, attr)
 
@@ -645,7 +647,7 @@ func (v *VFS) Open(ctx Context, ino Ino, flags uint32) (entry *meta.Entry, fh ui
 	err = v.Meta.Open(ctx, ino, flags, attr)
 	if err == 0 {
 		v.UpdateLength(ino, attr)
-		fh = v.newFileHandle(ino, attr.Length, flags)
+		fh = v.newFileHandle(ctx, ino, attr.Length, flags)
 		entry = &meta.Entry{Inode: ino, Attr: attr}
 		if v.changes != nil {
 			v.changes.opened(ino, attr)
@@ -1436,6 +1438,31 @@ func initVFSMetrics(v *VFS, writer DataWriter, reader DataReader, registerer pro
 	})
 	_ = registerer.Register(handlersGause)
 	if n := v.changes; n != nil {
+		n.diagnostics.register(registerer)
+		for name, metric := range map[string]struct {
+			help  string
+			value func() float64
+		}{
+			"change_notification_input_changes_total":    {"Change paths evaluated by the configured matcher.", func() float64 { return float64(n.inputChanges) }},
+			"change_notification_filtered_changes_total": {"Change paths rejected by the configured matcher.", func() float64 { return float64(n.filteredChanges) }},
+			"change_notification_matched_changes_total":  {"Change paths accepted by the configured matcher.", func() float64 { return float64(n.matchedChanges) }},
+			"change_notification_matching_seconds_total": {"Time spent matching configured notification patterns.", func() float64 { return float64(n.matchingNanos) / 1e9 }},
+		} {
+			value := metric.value
+			_ = registerer.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: name, Help: metric.help}, func() float64 { n.Lock(); defer n.Unlock(); return value() }))
+		}
+		_ = registerer.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "change_notification_subscribers", Help: "Active control subscriptions."}, func() float64 { n.Lock(); defer n.Unlock(); return float64(len(n.subscribers)) }))
+		_ = registerer.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "change_notification_subscription_patterns", Help: "Additional patterns on active subscriptions, counting duplicates."}, func() float64 {
+			n.Lock()
+			defer n.Unlock()
+			var count int
+			for _, matcher := range n.subscribers {
+				if matcher != nil {
+					count += len(matcher.patterns)
+				}
+			}
+			return float64(count)
+		}))
 		_ = registerer.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "change_notification_path_edges", Help: "Locally indexed directory entries."}, func() float64 {
 			n.Lock()
 			defer n.Unlock()

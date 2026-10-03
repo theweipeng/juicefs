@@ -1,0 +1,23 @@
+{
+  "patterns": [
+    ".yohu/agency/*/{AGENCY,ORG,RULES}.md",
+    ".yohu/agency/*/agents/*/{AGENTS.md,SOUL.md,TOOLS.md,mcp.json}",
+    ".yohu/agency/*/channels/*/CHANNEL.md",
+    ".yohu/agency/*/agents/*/skills/**",
+    ".yohu/agency/*/agents/*/projects/*/skills/**",
+    ".yohu/agency/*/wiki/**"
+  ],
+  "watched_files": [
+    "/.yohu/agency/acme/AGENCY.md",
+    "/.yohu/agency/acme/agents/alice/AGENTS.md",
+    "/.yohu/agency/acme/channels/main/CHANNEL.md",
+    "/.yohu/agency/acme/agents/alice/skills/demo/SKILL.md",
+    "/.yohu/agency/acme/agents/alice/projects/main/skills/demo/SKILL.md",
+    "/.yohu/agency/acme/wiki/INDEX.md"
+  ],
+  "noise_directories": [
+    "/.yohu/agency/acme/_runtime/llm_snapshots/run",
+    "/.yohu/agency/acme/agents/alice/workspaces/task-123",
+    "/.yohu/agency/acme/_runtime/tasks/task-123/workspace/.superdata/wiki"
+  ]
+}

@@ -1,16 +1,13 @@
 package vfs
 
 import (
-	"fmt"
 	"path"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode/utf8"
+	"time"
 
 	"github.com/juicedata/juicefs/pkg/meta"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 )
 
@@ -36,15 +33,19 @@ type changeFrame struct {
 	Patterns     []string     `json:"patterns,omitempty"`
 	OK           bool         `json:"ok"`
 	Error        string       `json:"error,omitempty"`
+	Errno        int          `json:"errno,omitempty"`
+	FailureStage string       `json:"failure_stage,omitempty"`
 	Resync       bool         `json:"resync,omitempty"`
 }
 
 type changeNotifier struct {
 	sync.Mutex
 	invalidationMu       sync.Mutex
+	diagnostics          *invalidationDiagnostics
 	reclaimWake          chan struct{}
 	index                *pathIndex
 	patterns             []string
+	matcher              *changeMatcher
 	epoch                string
 	origin               string
 	sequence             uint64
@@ -52,24 +53,24 @@ type changeNotifier struct {
 	invalidations        atomic.Uint64
 	invalidationFailures atomic.Uint64
 	reclaimFailures      atomic.Uint64
-	subscribers          map[chan changeFrame]bool
+	subscribers          map[chan changeFrame]*changeMatcher
+	inputChanges         uint64
+	filteredChanges      uint64
+	matchedChanges       uint64
+	matchingNanos        uint64
+	matchingMaxNanos     uint64
 }
 
 // ValidateChangePatterns 校验卷内 glob，不读取文件系统。
 func ValidateChangePatterns(patterns []string) error {
-	if len(patterns) > 256 {
-		return fmt.Errorf("too many change patterns (maximum 256)")
-	}
-	for _, pattern := range patterns {
-		if pattern == "" || len(pattern) > 4096 || !utf8.ValidString(pattern) || strings.ContainsRune(pattern, 0) || !doublestar.ValidatePattern(pattern) {
-			return fmt.Errorf("invalid change glob %q", pattern)
-		}
-	}
-	return nil
+	_, err := compileChangeMatcher(patterns)
+	return err
 }
 
 func newChangeNotifier(patterns []string) *changeNotifier {
-	n := &changeNotifier{index: newPathIndex(), origin: uuid.NewString(), epoch: uuid.NewString(), subscribers: make(map[chan changeFrame]bool), reclaimWake: make(chan struct{}, 1)}
+	n := &changeNotifier{index: newPathIndex(), origin: uuid.NewString(), epoch: uuid.NewString(), subscribers: make(map[chan changeFrame]*changeMatcher), reclaimWake: make(chan struct{}, 1)}
+	n.diagnostics = newInvalidationDiagnostics()
+	n.matcher, _ = compileChangeMatcher(patterns)
 	for _, pattern := range patterns {
 		n.patterns = append(n.patterns, pattern)
 	}
@@ -100,6 +101,9 @@ func (n *changeNotifier) opened(inode Ino, attr *Attr) {
 		return
 	}
 	n.index.links[inode] = attr.Nlink
+	if n.index.children[inode] > 0 && attr.Nlink != 1 {
+		n.index.positionChecks[inode] = true
+	}
 	n.index.generation++
 	for _, record := range n.index.parents[inode] {
 		record.generation = n.index.generation
@@ -126,34 +130,47 @@ func (n *changeNotifier) rememberLocked(parent Ino, name string, inode Ino, link
 
 func (n *changeNotifier) emitLocked(changes []FileChange, resync bool) {
 	resync = resync || n.index.incomplete
-	var matched []FileChange
-	encodedBound := 1024
+	matched := make(map[chan changeFrame][]FileChange, len(n.subscribers))
+	interesting := resync
+	// 配置是自动通知的上限；订阅只能收窄，不能扩大配置范围。
+	var configured []FileChange
+	started := time.Now()
+	n.inputChanges += uint64(len(changes))
 	for _, change := range changes {
-		match := change.Recursive
-		for _, pattern := range n.patterns {
-			if match {
-				break
-			}
-			pattern = strings.TrimPrefix(pattern, "/")
-			match = doublestar.MatchUnvalidated(pattern, strings.TrimPrefix(change.Path, "/")) ||
-				change.OldPath != "" && doublestar.MatchUnvalidated(pattern, strings.TrimPrefix(change.OldPath, "/"))
-		}
-		if match {
-			matched = append(matched, change)
-			encodedBound += 6*(len(change.Path)+len(change.OldPath)) + 128
-			if len(matched) > 4096 || encodedBound > 1024*1024 {
-				matched = nil
-				resync = true
-				break
-			}
+		if n.matcher.matchesChange(change) {
+			configured = append(configured, change)
 		}
 	}
-	if len(matched) == 0 && !resync {
+	elapsed := uint64(time.Since(started))
+	n.matchingNanos += elapsed
+	if elapsed > n.matchingMaxNanos {
+		n.matchingMaxNanos = elapsed
+	}
+	n.matchedChanges += uint64(len(configured))
+	n.filteredChanges += uint64(len(changes) - len(configured))
+	interesting = interesting || len(configured) > 0
+	if !interesting {
 		return
 	}
+	for queue, additional := range n.subscribers {
+		encodedBound := 1024
+		for _, change := range configured {
+			if additional == nil || len(additional.patterns) == 0 || additional.matchesChange(change) {
+				matched[queue] = append(matched[queue], change)
+				interesting = true
+				encodedBound += 6*(len(change.Path)+len(change.OldPath)) + 128
+				if len(matched[queue]) > 4096 || encodedBound > 1024*1024 {
+					matched[queue] = nil
+					resync = true
+					break
+				}
+			}
+		}
+	}
 	n.sequence++
-	frame := changeFrame{Type: "changed", Origin: n.origin, Epoch: n.epoch, Sequence: n.sequence, Changes: matched, Resync: resync}
 	for queue := range n.subscribers {
+		// 未命中的连接只接收空的序列进度帧，不能把过滤误判为丢包。
+		frame := changeFrame{Type: "changed", Origin: n.origin, Epoch: n.epoch, Sequence: n.sequence, Changes: matched[queue], Resync: resync}
 		select {
 		case queue <- frame:
 		default:
@@ -172,7 +189,7 @@ func (n *changeNotifier) emitLocked(changes []FileChange, resync bool) {
 	}
 }
 
-func (v *VFS) notifyRename(parent Ino, name string, newParent Ino, newName string, inode Ino, recursive bool, exchange ...bool) {
+func (v *VFS) notifyRename(parent Ino, name string, newParent Ino, newName string, inode Ino, recursive bool, exchanged Ino) {
 	n := v.changes
 	if n == nil {
 		return
@@ -183,13 +200,9 @@ func (v *VFS) notifyRename(parent Ino, name string, newParent Ino, newName strin
 	oldParents, oldComplete := n.index.paths(parent, false)
 	newParents, newComplete := n.index.paths(newParent, false)
 	if parent != newParent || name != newName {
-		var replaced Ino
-		if previous := n.index.current[pathEdge{newParent, newName}]; previous != nil {
-			replaced = previous.inode
-		}
 		n.rememberLocked(newParent, newName, inode)
-		if len(exchange) > 0 && exchange[0] {
-			n.rememberLocked(parent, name, replaced)
+		if exchanged != 0 {
+			n.rememberLocked(parent, name, exchanged)
 		} else {
 			n.rememberLocked(parent, name, 0)
 		}

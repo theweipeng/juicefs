@@ -26,7 +26,7 @@ func TestChangeGlob(t *testing.T) {
 			require.NoError(t, ValidateChangePatterns([]string{tc.Pattern}))
 			n := newChangeNotifier([]string{tc.Pattern})
 			queue := make(chan changeFrame, 1)
-			n.subscribers[queue] = true
+			n.subscribers[queue] = nil
 			n.emitLocked([]FileChange{{Path: tc.Path}}, false)
 			require.Equal(t, tc.Matched, len(queue) == 1)
 		})
@@ -63,7 +63,7 @@ func TestCommittedWriteAndNonBlockingOverflow(t *testing.T) {
 	v.changes = newChangeNotifier([]string{"**"})
 	v.writer.(*dataWriter).committed = v.notifyCommitted
 	queue := make(chan changeFrame, 1)
-	v.changes.subscribers[queue] = true
+	v.changes.subscribers[queue] = nil
 	ctx := NewLogContext(meta.NewContext(10, 0, []uint32{0}))
 	entry, handle, st := v.Create(ctx, rootID, "skill", 0644, 0, syscall.O_RDWR)
 	require.Zero(t, st)

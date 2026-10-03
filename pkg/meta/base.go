@@ -1437,7 +1437,7 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 	return st
 }
 
-func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode *Ino, attr *Attr) syscall.Errno {
+func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode *Ino, attr *Attr, exchanged ...*Entry) syscall.Errno {
 	if parentSrc == RootInode && nameSrc == TrashName || parentDst == RootInode && nameDst == TrashName {
 		return syscall.EPERM
 	}
@@ -1509,6 +1509,10 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	tattr := new(Attr)
 	st := m.en.doRename(ctx, parentSrc, nameSrc, parentDst, nameDst, flags, inode, tinode, attr, tattr)
 	if st == 0 {
+		// 交换目标的身份与类型取自同一次提交，不能用前后 Lookup 的结果猜测。
+		if flags == RenameExchange && len(exchanged) > 0 && exchanged[0] != nil {
+			*exchanged[0] = Entry{Inode: *tinode, Attr: tattr}
+		}
 		var diffLength uint64
 		if attr.Typ == TypeDirectory {
 			m.parentMu.Lock()

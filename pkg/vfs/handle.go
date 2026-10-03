@@ -46,6 +46,9 @@ type handle struct {
 	reader     FileReader
 	writer     FileWriter
 	ops        []Context
+	openPID    uint32
+	openUID    uint32
+	openedAt   time.Time
 
 	// rwlock
 	writing uint32
@@ -234,11 +237,14 @@ func (v *VFS) releaseHandle(inode Ino, fh uint64) {
 	}
 }
 
-func (v *VFS) newFileHandle(inode Ino, length uint64, flags uint32) uint64 {
+func (v *VFS) newFileHandle(ctx Context, inode Ino, length uint64, flags uint32) uint64 {
 	h := v.newHandle(inode, (flags&O_ACCMODE) == syscall.O_RDONLY)
 	h.Lock()
 	defer h.Unlock()
 	h.flags = flags
+	if v.changes != nil {
+		h.openPID, h.openUID, h.openedAt = ctx.Pid(), ctx.Uid(), time.Now()
+	}
 	switch flags & O_ACCMODE {
 	case syscall.O_RDONLY:
 		h.reader = v.reader.Open(inode, length)

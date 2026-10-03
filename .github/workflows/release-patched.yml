@@ -50,9 +50,10 @@ jobs:
           CXX: zig c++ -target x86_64-linux-gnu.2.17
         run: |
           REV=$(git rev-parse --short HEAD)
+          REV_DATE=$(git log -1 --format=%cs)
           TAG=${GITHUB_REF_NAME:-manual}
           go build \
-              -ldflags="-s -w -X github.com/juicedata/juicefs/pkg/version.revision=${REV}-${TAG}" \
+              -ldflags="-s -w -X github.com/juicedata/juicefs/pkg/version.revision=${REV}-${TAG} -X github.com/juicedata/juicefs/pkg/version.revisionDate=${REV_DATE}" \
               -o juicefs-linux-amd64 \
               .
           ls -lh juicefs-linux-amd64
@@ -75,7 +76,12 @@ jobs:
       - name: Smoke test
         run: |
           file juicefs-linux-amd64
-          ./juicefs-linux-amd64 version
+          VERSION=$(./juicefs-linux-amd64 version)
+          echo "$VERSION"
+          case "$VERSION" in
+            *"${GITHUB_REF_NAME}"*) ;;
+            *) echo "binary version is missing the patch tag"; exit 1 ;;
+          esac
           if strings juicefs-linux-amd64 | grep -q "ignoring DDL permission"; then
               echo "✓ PATCH MARKER FOUND in binary"
           else
@@ -115,13 +121,21 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/juicefs-linux-amd64
+          files: |
+            dist/juicefs-linux-amd64
+            dist/juicefs.sha256
           generate_release_notes: true
           body: |
-            Patched build of JuiceFS for OceanBase / restricted-permission deployments.
+            Patched build of JuiceFS with scoped cache invalidation and diagnostics.
 
-            **Patch**: `pkg/meta/sql.go` — `syncTable` 忽略 DDL 权限错误 (Error 1142/1044/1227),
-            适用于表已由 DBA 手动建好、用户只有 DML 权限的场景。
+            - 自动通知以挂载 patterns 为硬上限，订阅不能扩大范围。
+            - 带 patterns 的失效只处理请求与规则的交集；显式主动 API 不受监听规则限制。
+            - 定向失效不扫描全局索引；父链无法定位时明确失败，不回退到清卷。
+            - 增加失效阶段、锁持有者、占用句柄、过滤计数与健康汇总日志及 Prometheus 指标。
+            - 保留 OceanBase DDL 权限兼容、OSS V1 签名及 glibc 2.17 兼容构建。
+
+            二进制在发布前通过通知并发回归和 Linux 双挂载缓存测试。
+            `juicefs.sha256` 校验二进制完整性；目标 JuiceFS 环境仍需验证跨节点可见性及日志采集。
 
             ## Install
 
