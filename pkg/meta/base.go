@@ -1893,6 +1893,71 @@ func (m *baseMeta) GetParents(ctx Context, inode Ino) map[Ino]int {
 	}
 }
 
+// GetDirParent 只读取一个目录的父关系，枚举回退有严格预算。
+func (m *baseMeta) GetDirParent(ctx Context, inode Ino) (Ino, string, syscall.Errno) {
+	if inode == RootInode {
+		return 0, "", syscall.EINVAL
+	}
+	inode = m.checkRoot(inode)
+	if lookup, ok := m.en.(interface {
+		doGetDirParent(Context, Ino) (Ino, string, syscall.Errno)
+	}); ok {
+		parent, name, st := lookup.doGetDirParent(ctx, inode)
+		if st != 0 {
+			return 0, "", st
+		}
+		if parent == 0 || parent == inode || len(name) > MaxName || checkInodeName(name) != 0 || name == "." || name == ".." {
+			return 0, "", syscall.EAGAIN
+		}
+		if parent == m.root {
+			parent = RootInode
+		} else if m.root != RootInode && parent == RootInode {
+			return 0, "", syscall.EAGAIN
+		}
+		return parent, name, 0
+	}
+	var attr Attr
+	if st := m.en.doGetAttr(ctx, inode, &attr); st != 0 {
+		return 0, "", st
+	}
+	if attr.Typ != TypeDirectory || attr.Parent == 0 || attr.Parent == inode {
+		return 0, "", syscall.EAGAIN
+	}
+	var name string
+	// 没有反向目录项索引的后端最多读取 256 项，不能全目录扫描。
+	var entries []*Entry
+	if st := m.en.doReaddir(ctx, attr.Parent, 0, &entries, 256); st != 0 {
+		return 0, "", st
+	}
+	for _, entry := range entries {
+		if entry.Inode == inode && entry.Attr.Typ == TypeDirectory {
+			name = string(entry.Name)
+			break
+		}
+	}
+	if name == "" {
+		return 0, "", syscall.EAGAIN
+	}
+	if len(name) > MaxName || checkInodeName(name) != 0 || name == "." || name == ".." {
+		return 0, "", syscall.EAGAIN
+	}
+	// 再读目录属性，拒绝读取期间的移动；当前关系不能伪装成旧缓存路径。
+	var current Attr
+	if st := m.en.doGetAttr(ctx, inode, &current); st != 0 {
+		return 0, "", st
+	}
+	if current.Parent != attr.Parent || current.Typ != TypeDirectory {
+		return 0, "", syscall.EAGAIN
+	}
+	parent := attr.Parent
+	if parent == m.root {
+		parent = RootInode
+	} else if m.root != RootInode && parent == RootInode {
+		return 0, "", syscall.EAGAIN
+	}
+	return parent, name, 0
+}
+
 func (m *baseMeta) GetPaths(ctx Context, inode Ino) []string {
 	if inode == RootInode {
 		return []string{"/"}

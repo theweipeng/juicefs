@@ -174,6 +174,11 @@ var (
 )
 
 func (v *VFS) Lookup(ctx Context, parent Ino, name string) (entry *meta.Entry, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return nil, positionErr
+	}
+	defer release()
 	defer func() {
 		if v.changes != nil {
 			if err == 0 && entry != nil {
@@ -249,6 +254,11 @@ func get_filetype(mode uint16) uint8 {
 }
 
 func (v *VFS) Mknod(ctx Context, parent Ino, name string, mode uint16, cumask uint16, rdev uint32) (entry *meta.Entry, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return nil, positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 && entry != nil {
 			if v.changes != nil {
@@ -285,6 +295,11 @@ func (v *VFS) Mknod(ctx Context, parent Ino, name string, mode uint16, cumask ui
 }
 
 func (v *VFS) Unlink(ctx Context, parent Ino, name string) (err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 {
 			v.notifyEntry(parent, name, 0, "removed", false)
@@ -307,6 +322,11 @@ func (v *VFS) Unlink(ctx Context, parent Ino, name string) (err syscall.Errno) {
 }
 
 func (v *VFS) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask uint16) (entry *meta.Entry, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return nil, positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 && entry != nil {
 			if v.changes != nil {
@@ -338,6 +358,11 @@ func (v *VFS) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask ui
 }
 
 func (v *VFS) Rmdir(ctx Context, parent Ino, name string) (err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 {
 			v.notifyEntry(parent, name, 0, "removed", true)
@@ -356,6 +381,11 @@ func (v *VFS) Rmdir(ctx Context, parent Ino, name string) (err syscall.Errno) {
 }
 
 func (v *VFS) Symlink(ctx Context, path string, parent Ino, name string) (entry *meta.Entry, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return nil, positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 && entry != nil {
 			if v.changes != nil {
@@ -393,6 +423,11 @@ func (v *VFS) Readlink(ctx Context, ino Ino) (path []byte, err syscall.Errno) {
 }
 
 func (v *VFS) Rename(ctx Context, parent Ino, name string, newparent Ino, newname string, flags uint32) (err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent, newparent)
+	if positionErr != 0 {
+		return positionErr
+	}
+	defer release()
 	defer func() {
 		logit(ctx, "rename", err, "(%d,%s,%d,%s,%d)", parent, name, newparent, newname, flags)
 	}()
@@ -424,6 +459,11 @@ func (v *VFS) Rename(ctx Context, parent Ino, name string, newparent Ino, newnam
 }
 
 func (v *VFS) Link(ctx Context, ino Ino, newparent Ino, newname string) (entry *meta.Entry, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, newparent)
+	if positionErr != 0 {
+		return nil, positionErr
+	}
+	defer release()
 	defer func() {
 		logit(ctx, "link", err, "(%d,%d,%s):%s", ino, newparent, newname, (*Entry)(entry))
 	}()
@@ -454,6 +494,11 @@ func (v *VFS) Link(ctx Context, ino Ino, newparent Ino, newname string) (entry *
 }
 
 func (v *VFS) Opendir(ctx Context, ino Ino, flags uint32) (fh uint64, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, ino)
+	if positionErr != 0 {
+		return 0, positionErr
+	}
+	defer release()
 	defer func() { logit(ctx, "opendir", err, "(%d) [fh:%d]", ino, fh) }()
 	if ctx.CheckPermission() {
 		var mmask uint8 = 0
@@ -484,6 +529,11 @@ func (v *VFS) UpdateLength(inode Ino, attr *meta.Attr) {
 }
 
 func (v *VFS) Readdir(ctx Context, ino Ino, size uint32, off int, fh uint64, plus bool) (entries []*meta.Entry, readAt time.Time, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, ino)
+	if positionErr != 0 {
+		return nil, time.Time{}, positionErr
+	}
+	defer release()
 	defer func() { logit(ctx, "readdir", err, "(%d,%d,%d,%t): (%d)", ino, size, off, plus, len(entries)) }()
 	h := v.findHandle(ino, fh)
 	if h == nil {
@@ -556,6 +606,11 @@ func (v *VFS) Releasedir(ctx Context, ino Ino, fh uint64) int {
 const O_TMPFILE = 020000000
 
 func (v *VFS) Create(ctx Context, parent Ino, name string, mode uint16, cumask uint16, flags uint32) (entry *meta.Entry, fh uint64, err syscall.Errno) {
+	release, positionErr := v.beginDirectoryOperation(ctx, parent)
+	if positionErr != 0 {
+		return nil, 0, positionErr
+	}
+	defer release()
 	defer func() {
 		if err == 0 && entry != nil {
 			if v.changes != nil {

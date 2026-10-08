@@ -39,7 +39,7 @@ jobs:
           "$HOME/.zig/zig" version
 
       - name: File notification regression
-        run: go test -race ./pkg/vfs ./pkg/meta ./cmd -run 'TestChange|TestCommitted|TestInvalidation' -count=1
+        run: go test -race ./pkg/vfs ./pkg/meta ./cmd -run 'TestDirectoryParent|TestDirectoryPosition|TestChange|TestCommitted|TestInvalidation' -count=1
 
       - name: Build (CGO + glibc 2.17 target)
         env:

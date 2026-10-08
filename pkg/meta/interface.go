@@ -504,6 +504,8 @@ type Meta interface {
 	Clone(ctx Context, srcParentIno, srcIno, dstParentIno Ino, dstName string, cmode uint8, cumask uint16, count, total *uint64) syscall.Errno
 	// GetPaths returns all paths of an inode
 	GetPaths(ctx Context, inode Ino) []string
+	// GetDirParent 定向读取目录的当前父关系，不返回历史路径。
+	GetDirParent(ctx Context, inode Ino) (Ino, string, syscall.Errno)
 	// Check integrity of an absolute path and repair it if asked
 	Check(ctx Context, fpath string, repair bool, recursive bool, statAll bool) error
 	// Change root to a directory specified by subdir

@@ -398,7 +398,7 @@ func (m *dbMeta) initStatement() {
 	m.statement["node.*"] = fmt.Sprintf("%snode.*", m.tablePrefix)
 	m.statement[`INSERT INTO chunk_ref (chunkid, size, refs) VALUES (?,?,?) ON CONFLICT DO NOTHING`] =
 		fmt.Sprintf(`INSERT INTO %schunk_ref (chunkid, size, refs) VALUES (?,?,?) ON CONFLICT DO NOTHING`, m.tablePrefix)
-	m.statement[`INSERT IGNORE INTO chunk_ref (chunkid, size, refs) VALUES (?,?,?)`] = 
+	m.statement[`INSERT IGNORE INTO chunk_ref (chunkid, size, refs) VALUES (?,?,?)`] =
 		fmt.Sprintf(`INSERT IGNORE INTO %schunk_ref (chunkid, size, refs) VALUES (?,?,?)`, m.tablePrefix)
 }
 
@@ -2954,6 +2954,26 @@ func (m *dbMeta) doGetParents(ctx Context, inode Ino) map[Ino]int {
 		ps[row.Parent]++
 	}
 	return ps
+}
+
+// doGetDirParent 使用 inode 索引读取当前父关系，查询受调用方 deadline 限制。
+func (m *dbMeta) doGetDirParent(ctx Context, inode Ino) (Ino, string, syscall.Errno) {
+	var rows []edge
+	s := m.db.NewSession().Context(ctx)
+	defer s.Close()
+	started := time.Now()
+	defer func() { m.txDist.Observe(time.Since(started).Seconds()) }()
+	err := s.Limit(2).Find(&rows, &edge{Inode: inode, Type: TypeDirectory})
+	if ctx.Err() != nil {
+		return 0, "", syscall.EAGAIN
+	}
+	if err != nil {
+		return 0, "", errno(err)
+	}
+	if len(rows) != 1 {
+		return 0, "", syscall.EAGAIN
+	}
+	return rows[0].Parent, string(rows[0].Name), 0
 }
 
 func (m *dbMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {

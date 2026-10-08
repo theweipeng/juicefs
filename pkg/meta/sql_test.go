@@ -22,7 +22,10 @@ import (
 	"os"
 	"path"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSQLiteClient(t *testing.T) {
@@ -31,6 +34,25 @@ func TestSQLiteClient(t *testing.T) {
 		t.Fatalf("create meta: %s", err)
 	}
 	testMeta(t, m)
+}
+
+func TestDirectoryParentSQLiteUsesInodeLookup(t *testing.T) {
+	m, err := newSQLMeta("sqlite3", path.Join(t.TempDir(), "directory.db"), testConfig())
+	require.NoError(t, err)
+	require.NoError(t, m.Init(testFormat(), true))
+	ctx := Background()
+	var inode Ino
+	require.Zero(t, m.Mkdir(ctx, RootInode, "skill", 0755, 0, 0, &inode, &Attr{}))
+	parent, name, st := m.(*dbMeta).doGetDirParent(ctx, inode)
+	require.Zero(t, st)
+	require.Equal(t, "skill", name)
+	parent, name, st = m.GetDirParent(ctx, inode)
+	require.Zero(t, st)
+	require.Equal(t, RootInode, parent)
+	require.Equal(t, "skill", name)
+	ctx.Cancel()
+	_, _, st = m.GetDirParent(ctx, inode)
+	require.Equal(t, syscall.EAGAIN, st)
 }
 
 func TestMySQLClient(t *testing.T) { //skip mutate

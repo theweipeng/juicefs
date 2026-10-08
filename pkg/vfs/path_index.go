@@ -36,32 +36,36 @@ type pathReceipt struct {
 
 // 当前关系与待失效的旧关系分别排队；只在失效成功后按代次回收。
 type pathIndex struct {
-	edges          map[pathEdge]map[Ino]*pathRecord
-	parents        map[Ino]map[pathEdge]*pathRecord
-	current        map[pathEdge]*pathRecord
-	links          map[Ino]uint32
-	children       map[Ino]int
-	entries        map[Ino]map[string]map[Ino]*pathRecord
-	positionChecks map[Ino]bool
-	active         list.List
-	retired        list.List
-	generation     uint64
-	limit          int
-	incomplete     bool
-	overflows      uint64
-	reclaimed      uint64
+	edges             map[pathEdge]map[Ino]*pathRecord
+	parents           map[Ino]map[pathEdge]*pathRecord
+	current           map[pathEdge]*pathRecord
+	links             map[Ino]uint32
+	children          map[Ino]int
+	entries           map[Ino]map[string]map[Ino]*pathRecord
+	positionChecks    map[Ino]bool
+	directoryPins     map[Ino]int
+	directoryVersions map[Ino]uint64
+	active            list.List
+	retired           list.List
+	generation        uint64
+	limit             int
+	incomplete        bool
+	overflows         uint64
+	reclaimed         uint64
 }
 
 func newPathIndex() *pathIndex {
 	return &pathIndex{
-		edges:          make(map[pathEdge]map[Ino]*pathRecord),
-		parents:        make(map[Ino]map[pathEdge]*pathRecord),
-		current:        make(map[pathEdge]*pathRecord),
-		links:          make(map[Ino]uint32),
-		children:       make(map[Ino]int),
-		entries:        make(map[Ino]map[string]map[Ino]*pathRecord),
-		positionChecks: make(map[Ino]bool),
-		limit:          DefaultChangeIndexLimit,
+		edges:             make(map[pathEdge]map[Ino]*pathRecord),
+		parents:           make(map[Ino]map[pathEdge]*pathRecord),
+		current:           make(map[pathEdge]*pathRecord),
+		links:             make(map[Ino]uint32),
+		children:          make(map[Ino]int),
+		entries:           make(map[Ino]map[string]map[Ino]*pathRecord),
+		positionChecks:    make(map[Ino]bool),
+		directoryPins:     make(map[Ino]int),
+		directoryVersions: make(map[Ino]uint64),
+		limit:             DefaultChangeIndexLimit,
 	}
 }
 
@@ -85,6 +89,12 @@ func (p *pathIndex) remember(parent Ino, name string, inode Ino, links ...uint32
 		}
 	}
 	p.generation++
+	if previous := p.current[edge]; p.directoryPins[inode] > 0 && (previous == nil || previous.inode != inode) {
+		p.directoryVersions[inode]++
+	}
+	if previous := p.current[edge]; previous != nil && previous.inode != inode && p.directoryPins[previous.inode] > 0 {
+		p.directoryVersions[previous.inode]++
+	}
 	if previous := p.current[edge]; previous != nil && previous.inode != inode {
 		p.active.Remove(previous.element)
 		previous.retired = true
@@ -140,8 +150,11 @@ func (p *pathIndex) remember(parent Ino, name string, inode Ino, links ...uint32
 	}
 }
 
-// 后代仍有缓存时，只能回收有其他完整父链承接定位的历史目录关系。
+// 后代仍有缓存时保住最后的父链；进行中的目录操作不能被回收跨过。
 func (p *pathIndex) canRemove(r *pathRecord) bool {
+	if r.inode != 0 && p.directoryPins[r.inode] > 0 {
+		return false
+	}
 	if r.inode == 0 || p.children[r.inode] == 0 {
 		return true
 	}
@@ -230,7 +243,7 @@ func (p *pathIndex) candidates(now time.Time) []pathReceipt {
 		if !pressure && now.Sub(r.seen) < changeIndexIdle {
 			break
 		}
-		if r.inode != 0 && p.children[r.inode] > 0 {
+		if !p.canRemove(r) {
 			continue
 		}
 		result = append(result, pathReceipt{r, r.generation})

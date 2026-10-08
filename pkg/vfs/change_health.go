@@ -18,6 +18,9 @@ func (v *VFS) logChangeHealth() {
 		fields["index_records"], fields["index_limit"], fields["index_retired"] = n.index.size(), n.index.limit, n.index.retired.Len()
 		fields["index_incomplete"], fields["position_check_required"] = n.index.incomplete, len(n.index.positionChecks) > 0
 		fields["position_check_parents"] = len(n.index.positionChecks)
+		fields["directory_pins"] = len(n.index.directoryPins)
+		fields["last_parent_repair_inode"], fields["last_parent_repair_errno"] = n.lastParentRepairInode, int(n.lastParentRepairErrno)
+		fields["last_parent_repair_failure"] = n.lastParentRepairFailure
 		patterns := make([]string, 0, 20)
 		for _, pattern := range n.patterns {
 			if len(patterns) == 20 {
@@ -37,6 +40,8 @@ func (v *VFS) logChangeHealth() {
 		fields["result"], fields["index_busy"] = "degraded", true
 	}
 	fields["invalidation_requests"], fields["invalidation_failures"] = n.invalidations.Load(), n.invalidationFailures.Load()
+	fields["parent_repair_attempts"], fields["parent_repair_successes"], fields["parent_repair_failures"] = n.parentRepairAttempts.Load(), n.parentRepairSuccesses.Load(), n.parentRepairFailures.Load()
+	fields["parent_repair_total_ms"] = float64(n.parentRepairNanos.Load()) / 1e6
 	d := n.diagnostics
 	d.Lock()
 	lastResults := make(map[string]string)

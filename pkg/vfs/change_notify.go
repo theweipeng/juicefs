@@ -4,6 +4,7 @@ import (
 	"path"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/juicedata/juicefs/pkg/meta"
@@ -40,25 +41,32 @@ type changeFrame struct {
 
 type changeNotifier struct {
 	sync.Mutex
-	invalidationMu       sync.Mutex
-	diagnostics          *invalidationDiagnostics
-	reclaimWake          chan struct{}
-	index                *pathIndex
-	patterns             []string
-	matcher              *changeMatcher
-	epoch                string
-	origin               string
-	sequence             uint64
-	overflows            uint64
-	invalidations        atomic.Uint64
-	invalidationFailures atomic.Uint64
-	reclaimFailures      atomic.Uint64
-	subscribers          map[chan changeFrame]*changeMatcher
-	inputChanges         uint64
-	filteredChanges      uint64
-	matchedChanges       uint64
-	matchingNanos        uint64
-	matchingMaxNanos     uint64
+	invalidationMu          sync.Mutex
+	diagnostics             *invalidationDiagnostics
+	reclaimWake             chan struct{}
+	index                   *pathIndex
+	patterns                []string
+	matcher                 *changeMatcher
+	epoch                   string
+	origin                  string
+	sequence                uint64
+	overflows               uint64
+	invalidations           atomic.Uint64
+	invalidationFailures    atomic.Uint64
+	reclaimFailures         atomic.Uint64
+	parentRepairAttempts    atomic.Uint64
+	parentRepairSuccesses   atomic.Uint64
+	parentRepairFailures    atomic.Uint64
+	parentRepairNanos       atomic.Uint64
+	lastParentRepairInode   Ino
+	lastParentRepairErrno   syscall.Errno
+	lastParentRepairFailure map[string]interface{}
+	subscribers             map[chan changeFrame]*changeMatcher
+	inputChanges            uint64
+	filteredChanges         uint64
+	matchedChanges          uint64
+	matchingNanos           uint64
+	matchingMaxNanos        uint64
 }
 
 // ValidateChangePatterns 校验卷内 glob，不读取文件系统。
