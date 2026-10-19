@@ -1,6 +1,6 @@
 name: release-patched
 
-# 推 v 开头的 tag (例如 v1.3.1-patched) 时触发, 编 Linux amd64 二进制并发布到 Releases.
+# 推 v 开头的 tag 时构建同一 commit 的 Linux amd64 CLI 与 Python SDK。
 # 不依赖官方 release.yml 的 goreleaser / Maven / GPG secrets, 只用 GITHUB_TOKEN.
 
 on:
@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       # zig cc 作为 CGO 的 cross-compiler, 显式 target glibc 2.17 (CentOS 7 / RHEL 7).
@@ -39,7 +39,7 @@ jobs:
           "$HOME/.zig/zig" version
 
       - name: File notification regression
-        run: go test -race ./pkg/vfs ./pkg/meta ./cmd -run 'TestDirectoryParent|TestDirectoryPosition|TestChange|TestCommitted|TestInvalidation' -count=1
+        run: go test -race ./pkg/vfs ./pkg/meta ./cmd -run 'TestOceanBase|TestDirectoryParent|TestDirectoryPosition|TestChange|TestCommitted|TestInvalidation' -count=1
 
       - name: Build (CGO + glibc 2.17 target)
         env:
@@ -57,6 +57,50 @@ jobs:
               -o juicefs-linux-amd64 \
               .
           ls -lh juicefs-linux-amd64
+
+      - name: Build Python SDK from the same revision
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+          CC: zig cc -target x86_64-linux-gnu.2.17
+          CXX: zig c++ -target x86_64-linux-gnu.2.17
+        run: |
+          python3 -m pip install build wheel 'setuptools>=70'
+          make -C sdk/python libjfs.so
+          export JUICEFS_BUILD_VERSION="1.3.1+g$(git rev-parse --short=12 HEAD)"
+          export JUICEFS_BUILD_INFO="JuiceFS $(git rev-parse HEAD)"
+          cd sdk/python/juicefs
+          python3 setup.py bdist_wheel --plat-name manylinux_2_17_x86_64
+          python3 -m pip install dist/*.whl
+          python3 -c 'from juicefs.juicefs import JuiceFSLib; JuiceFSLib()'
+          python3 -c 'import zipfile, glob; p=glob.glob("dist/*.whl")[0]; z=zipfile.ZipFile(p); assert "libjfs.so" in str(z.namelist()); assert "py3-none-manylinux_2_17_x86_64" in p'
+
+      - name: Verify SDK glibc requirement
+        run: |
+          MAX_GLIBC=$(strings sdk/python/juicefs/juicefs/libjfs.so | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
+          test -n "$MAX_GLIBC"
+          test "$(printf '%s\n' GLIBC_2.17 "$MAX_GLIBC" | sort -V | tail -1)" = GLIBC_2.17
+
+      - name: SDK metadata smoke test
+        run: |
+          root=$(mktemp -d)
+          ./juicefs-linux-amd64 format --storage file --bucket "$root/objects" "sqlite3://$root/meta.db" sdk-smoke
+          python3 - "$root" <<'PY'
+          import sys
+          from juicefs import Client
+          meta = 'sqlite3://' + sys.argv[1] + '/meta.db'
+          writer = Client('writer', meta, no_bgjob=True, no_usage_report=True)
+          writer.mkdir('/probe')
+          reader = Client('reader', meta, read_only=True, no_session=True, no_bgjob=True, no_usage_report=True, attr_cache='0s', entry_cache='0s', dir_entry_cache='0s')
+          assert any(name == 'probe' for name, info in reader.listdir('/', detail=True))
+          try:
+              reader.mkdir('/forbidden')
+          except OSError:
+              pass
+          else:
+              raise AssertionError('SDK client must be read-only')
+          PY
 
       - name: Verify glibc requirement
         run: |
@@ -95,6 +139,14 @@ jobs:
           sudo python3 tests/file_change_notifications.py ./juicefs-linux-amd64
           sha256sum juicefs-linux-amd64 > juicefs.sha256
 
+      - name: Assemble pinned CLI and SDK bundle
+        run: |
+          mkdir -p bundle
+          cp juicefs-linux-amd64 sdk/python/juicefs/dist/*.whl bundle/
+          git rev-parse HEAD > bundle/REVISION
+          (cd bundle && sha256sum juicefs-linux-amd64 *.whl > SHA256SUMS && zip ../juicefs-linux-amd64-sdk.zip *)
+          sha256sum juicefs-linux-amd64-sdk.zip > juicefs-linux-amd64-sdk.zip.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -102,6 +154,8 @@ jobs:
           path: |
             juicefs-linux-amd64
             juicefs.sha256
+            juicefs-linux-amd64-sdk.zip
+            juicefs-linux-amd64-sdk.zip.sha256
           retention-days: 30
 
   release:
@@ -124,10 +178,14 @@ jobs:
           files: |
             dist/juicefs-linux-amd64
             dist/juicefs.sha256
+            dist/juicefs-linux-amd64-sdk.zip
+            dist/juicefs-linux-amd64-sdk.zip.sha256
           generate_release_notes: true
           body: |
-            Patched build of JuiceFS with scoped cache invalidation and diagnostics.
+            Patched JuiceFS CLI and Python SDK built from one pinned commit.
 
+            - OceanBase 6235 快照冲突纳入完整事务回滚与退避重试。
+            - 提供带正确平台标签的只读元数据查询 SDK wheel。
             - 自动通知以挂载 patterns 为硬上限，订阅不能扩大范围。
             - 带 patterns 的失效只处理请求与规则的交集；显式主动 API 不受监听规则限制。
             - 定向失效不扫描全局索引；父链无法定位时明确失败，不回退到清卷。
@@ -135,7 +193,8 @@ jobs:
             - 保留 OceanBase DDL 权限兼容、OSS V1 签名及 glibc 2.17 兼容构建。
 
             二进制在发布前通过通知并发回归和 Linux 双挂载缓存测试。
-            `juicefs.sha256` 校验二进制完整性；目标 JuiceFS 环境仍需验证跨节点可见性及日志采集。
+            `juicefs-linux-amd64-sdk.zip` 同时提供 CLI、SDK wheel、源码 REVISION 和 SHA256SUMS。
+            独立的 zip.sha256 校验整包；目标 JuiceFS 环境仍需验证跨节点可见性及日志采集。
 
             ## Install
 
